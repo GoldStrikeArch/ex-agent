@@ -32,7 +32,7 @@ defmodule Tui.TerminalApp.Root do
           input: Prompt.t(),
           notice: String.t() | nil,
           panel: :help | :status | nil,
-          pending_prompts: MapSet.t(reference()),
+          pending_prompts: term(),
           selected_command: non_neg_integer(),
           status: Status.t(),
           submit_prompt: Tui.TerminalApp.submit_prompt() | nil,
@@ -46,15 +46,15 @@ defmodule Tui.TerminalApp.Root do
   """
   @spec new(keyword()) :: t()
   def new(opts) do
-    width = Keyword.get(opts, :width, 80)
-    height = Keyword.get(opts, :height, 24)
+    width = opts |> Keyword.get(:width, 80) |> positive_integer_or(80)
+    height = opts |> Keyword.get(:height, 24) |> positive_integer_or(24)
 
     %__MODULE__{
       height: height,
       input: Prompt.new(width: prompt_width(width)),
       status: Status.new(),
-      submit_prompt: Keyword.get(opts, :submit_prompt),
-      task_supervisor: Keyword.get(opts, :task_supervisor, Tui.TaskSupervisor),
+      submit_prompt: prompt_callback(Keyword.get(opts, :submit_prompt)),
+      task_supervisor: task_supervisor(Keyword.get(opts, :task_supervisor, Tui.TaskSupervisor)),
       transcript: Transcript.new(),
       width: width
     }
@@ -120,6 +120,9 @@ defmodule Tui.TerminalApp.Root do
   """
   @spec reduce(term(), t()) :: {t(), [atom()]}
   def reduce({:resize, width, height}, state) do
+    width = positive_integer_or(width, state.width)
+    height = positive_integer_or(height, state.height)
+
     state =
       state
       |> Map.put(:width, max(20, width))
@@ -365,6 +368,9 @@ defmodule Tui.TerminalApp.Root do
   defp resolve_supervisor(nil), do: nil
   defp resolve_supervisor(pid) when is_pid(pid), do: if(Process.alive?(pid), do: pid)
   defp resolve_supervisor(name) when is_atom(name), do: Process.whereis(name)
+  defp resolve_supervisor({name, node} = server) when is_atom(name) and is_atom(node), do: server
+  defp resolve_supervisor({:global, _name} = server), do: server
+  defp resolve_supervisor({:via, module, _name} = server) when is_atom(module), do: server
 
   defp command_menu_visible?(state) do
     state.input
@@ -503,6 +509,23 @@ defmodule Tui.TerminalApp.Root do
   defp rect(width, y, height) do
     %Rect{x: 0, y: y, width: width, height: height}
   end
+
+  @spec positive_integer_or(term(), pos_integer()) :: pos_integer()
+  defp positive_integer_or(value, _fallback) when is_integer(value) and value > 0, do: value
+  defp positive_integer_or(_value, fallback), do: fallback
+
+  @spec prompt_callback(term()) :: Tui.TerminalApp.submit_prompt() | nil
+  defp prompt_callback(callback) when is_function(callback, 1), do: callback
+  defp prompt_callback(_callback), do: nil
+
+  @spec task_supervisor(term()) :: GenServer.server() | nil
+  defp task_supervisor(nil), do: nil
+  defp task_supervisor(pid) when is_pid(pid), do: pid
+  defp task_supervisor(name) when is_atom(name), do: name
+  defp task_supervisor({name, node} = server) when is_atom(name) and is_atom(node), do: server
+  defp task_supervisor({:global, _name} = server), do: server
+  defp task_supervisor({:via, module, _name} = server) when is_atom(module), do: server
+  defp task_supervisor(_server), do: nil
 
   defp prompt_width(width), do: max(10, width - 2)
 

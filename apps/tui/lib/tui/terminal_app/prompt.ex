@@ -25,14 +25,14 @@ defmodule Tui.TerminalApp.Prompt do
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
     state = ExRatatui.textarea_new()
-    value = Keyword.get(opts, :value, "")
+    value = opts |> Keyword.get(:value, "") |> prompt_value()
     :ok = ExRatatui.textarea_set_value(state, value)
 
     %__MODULE__{
-      max_visible_lines: Keyword.get(opts, :max_visible_lines, 3),
-      placeholder: Keyword.get(opts, :placeholder, "type a prompt, / for commands"),
+      max_visible_lines: opts |> Keyword.get(:max_visible_lines, 3) |> positive_integer_or(3),
+      placeholder: placeholder(Keyword.get(opts, :placeholder)),
       state: state,
-      width: Keyword.get(opts, :width, 80)
+      width: opts |> Keyword.get(:width, 80) |> positive_integer_or(80)
     }
   end
 
@@ -101,4 +101,16 @@ defmodule Tui.TerminalApp.Prompt do
       style: %Style{fg: :white}
     }
   end
+
+  @spec prompt_value(term()) :: String.t()
+  defp prompt_value(value) when is_binary(value), do: value
+  defp prompt_value(_value), do: ""
+
+  @spec placeholder(term()) :: String.t()
+  defp placeholder(value) when is_binary(value), do: value
+  defp placeholder(_value), do: "type a prompt, / for commands"
+
+  @spec positive_integer_or(term(), pos_integer()) :: pos_integer()
+  defp positive_integer_or(value, _default) when is_integer(value) and value > 0, do: value
+  defp positive_integer_or(_value, default), do: default
 end
