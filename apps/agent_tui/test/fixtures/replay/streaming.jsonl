@@ -1,0 +1,6 @@
+{"event":"session_started","payload":[{"session_id":"session-stream"}]}
+{"event":"message_finished","payload":[{"id":"message-user","role":"user","content":"hello"}]}
+{"event":"message_started","payload":["message-assistant","assistant"]}
+{"event":"message_delta","payload":["message-assistant","hello"]}
+{"event":"message_delta","payload":["message-assistant",", world"]}
+{"event":"message_finished","payload":[{"id":"message-assistant","role":"assistant","content":"hello, world"}]}

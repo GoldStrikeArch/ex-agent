@@ -25,7 +25,8 @@ defmodule AgentTui.MixProject do
 
   defp deps do
     [
-      {:agent_core, in_umbrella: true}
+      {:agent_core, in_umbrella: true},
+      {:owl, "~> 0.13"}
     ]
   end
 end

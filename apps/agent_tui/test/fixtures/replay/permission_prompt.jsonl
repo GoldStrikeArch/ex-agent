@@ -1,0 +1,3 @@
+{"event":"session_started","payload":[{"session_id":"session-permission"}]}
+{"event":"permission_requested","payload":["request-1","shell: mix test"]}
+{"event":"permission_resolved","payload":["request-1","allow"]}

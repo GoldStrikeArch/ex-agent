@@ -1,0 +1,4 @@
+{"event":"session_started","payload":[{"session_id":"session-failed-tool"}]}
+{"event":"tool_started","payload":["tool-missing","missing",{}]}
+{"event":"error","payload":["tool",{"reason":"unknown_tool","name":"missing"}]}
+{"event":"tool_finished","payload":["tool-missing","error","unknown_tool missing"]}

@@ -1,0 +1,7 @@
+{"event":"session_started","payload":[{"session_id":"session-batch"}]}
+{"event":"batch_started","payload":["batch-1",2]}
+{"event":"tool_started","payload":["tool-read","read_file",{"path":"README.md"}]}
+{"event":"tool_started","payload":["tool-grep","grep",{"pattern":"defmodule","path":"lib"}]}
+{"event":"tool_finished","payload":["tool-read","ok","read README.md"]}
+{"event":"tool_finished","payload":["tool-grep","ok","3 matches"]}
+{"event":"batch_finished","payload":["batch-1","ok"]}

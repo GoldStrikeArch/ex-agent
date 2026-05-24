@@ -83,6 +83,46 @@ defmodule AgentTui.TextRenderer do
     ["tool> finished ", inspect(status), " ", to_string(summary), "\n"]
   end
 
+  def render({:batch_started, batch_id, count}) do
+    ["batch> ", batch_id, " started ", Integer.to_string(count), " calls\n"]
+  end
+
+  def render({:batch_finished, batch_id, status}) do
+    ["batch> ", batch_id, " finished ", inspect(status), "\n"]
+  end
+
+  def render({:edit_preview, edit_id, file_path, diff}) do
+    ["edit> ", edit_id, " preview ", file_path, "\n", diff, "\n"]
+  end
+
+  def render({:edit_applied, edit_id, file_path}) do
+    ["edit> ", edit_id, " applied ", file_path, "\n"]
+  end
+
+  def render({:validation_started, command}) do
+    ["validation> ", command, " started\n"]
+  end
+
+  def render({:validation_finished, command, exit_status, summary}) do
+    [
+      "validation> ",
+      command,
+      " finished ",
+      Integer.to_string(exit_status),
+      " ",
+      summary,
+      "\n"
+    ]
+  end
+
+  def render({:permission_requested, request_id, action}) do
+    ["permission> ", request_id, " requested ", inspect(action), "\n"]
+  end
+
+  def render({:permission_resolved, request_id, decision}) do
+    ["permission> ", request_id, " resolved ", inspect(decision), "\n"]
+  end
+
   def render({:error, scope, reason}) do
     ["error ", inspect(scope), " ", inspect(reason), "\n"]
   end

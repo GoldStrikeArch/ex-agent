@@ -1,0 +1,3 @@
+{"event":"session_started","payload":[{"session_id":"session-edit"}]}
+{"event":"edit_preview","payload":["edit-1","lib/example.ex","--- a/lib/example.ex\n+++ b/lib/example.ex\n@@\n-old\n+new"]}
+{"event":"edit_applied","payload":["edit-1","lib/example.ex"]}

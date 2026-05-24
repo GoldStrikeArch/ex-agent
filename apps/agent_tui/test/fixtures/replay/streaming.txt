@@ -1,0 +1,3 @@
+session started session-stream
+user> hello
+assistant> hello, world

@@ -1,0 +1,8 @@
+session started session-edit
+edit> edit-1 preview lib/example.ex
+--- a/lib/example.ex
++++ b/lib/example.ex
+@@
+-old
++new
+edit> edit-1 applied lib/example.ex

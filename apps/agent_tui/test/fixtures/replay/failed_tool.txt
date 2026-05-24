@@ -1,0 +1,4 @@
+session started session-failed-tool
+tool> missing started
+error :tool %{name: "missing", reason: "unknown_tool"}
+tool> finished :error unknown_tool missing

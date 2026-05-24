@@ -1,0 +1,3 @@
+session started session-permission
+permission> request-1 requested "shell: mix test"
+permission> request-1 resolved "allow"

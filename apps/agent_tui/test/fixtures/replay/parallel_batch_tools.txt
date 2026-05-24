@@ -1,0 +1,7 @@
+session started session-batch
+batch> batch-1 started 2 calls
+tool> read_file started
+tool> grep started
+tool> finished :ok read README.md
+tool> finished :ok 3 matches
+batch> batch-1 finished :ok
