@@ -5,7 +5,9 @@ defmodule AgentTui.Application do
 
   @impl true
   def start(_type, _args) do
-    children = []
+    children = [
+      {Task.Supervisor, name: AgentTui.TaskSupervisor}
+    ]
 
     opts = [strategy: :one_for_one, name: AgentTui.Supervisor]
     Supervisor.start_link(children, opts)

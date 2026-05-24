@@ -34,7 +34,9 @@ defmodule AgentCore.EventTest do
         id: "message-tools",
         role: :assistant,
         content: "",
-        tool_calls: [%{id: "tool-1", name: "read_file", args: %{path: "mix.exs"}}]
+        tool_calls: [
+          %{id: "tool-1", provider_id: "fc_1", name: "read_file", args: %{path: "mix.exs"}}
+        ]
       }),
       AgentCore.Event.message_finished(%{
         id: "message-result",

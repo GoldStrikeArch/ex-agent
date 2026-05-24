@@ -120,7 +120,6 @@ defmodule AgentCore.ModelClient.Mock do
 
   defp response_content(%{content: content}) when is_binary(content), do: content
   defp response_content(content) when is_binary(content), do: content
-  defp response_content(_response), do: ""
 
   defp emit_response("", _event_sink), do: :ok
 

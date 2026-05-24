@@ -1,15 +1,7 @@
-defmodule AgentTui.LiveStatus do
+defmodule AgentTui.TerminalApp.Status do
   @moduledoc """
-  Maintains a compact live status block for terminal sessions.
-
-  The process subscribes to `AgentCore.EventBus`, reduces core events into a
-  small status snapshot, and publishes that snapshot through `Owl.LiveScreen`.
-  Transcript rendering stays in `AgentTui.TextRenderer`; this module only owns
-  ephemeral status such as the current turn, active tools, active batches, and
-  pending permission requests.
+  Reduces agent events into compact, stateful UI status.
   """
-
-  use GenServer
 
   @type tool_state :: %{
           name: String.t(),
@@ -31,57 +23,30 @@ defmodule AgentTui.LiveStatus do
   @type t :: %__MODULE__{
           active_batches: %{String.t() => batch_state()},
           active_tools: %{String.t() => tool_state()},
-          block_id: term(),
           current_turn: String.t() | nil,
           last_batch: {String.t(), AgentCore.Event.status()} | nil,
           last_error: {atom(), term()} | nil,
           last_tool: {String.t(), String.t(), AgentCore.Event.status(), term()} | nil,
-          live_enabled: boolean(),
           permission: permission_state() | nil,
-          screen: GenServer.server() | nil,
           session_id: String.t() | nil,
           status: :idle | :running | :finished | :error
         }
 
   defstruct active_batches: %{},
             active_tools: %{},
-            block_id: :agent_tui_status,
             current_turn: nil,
             last_batch: nil,
             last_error: nil,
             last_tool: nil,
-            live_enabled: true,
             permission: nil,
-            screen: Owl.LiveScreen,
             session_id: nil,
             status: :idle
 
   @doc """
-  Starts a live status process.
-
-  Options:
-
-    * `:screen` - `Owl.LiveScreen` server to update. Defaults to `Owl.LiveScreen`.
-    * `:block_id` - LiveScreen block id. Defaults to `:agent_tui_status`.
-    * `:live_enabled` - set to `false` for pure state tests.
-    * `:subscribe` - set to `false` to skip `AgentCore.EventBus` subscription.
+  Builds an idle status snapshot.
   """
-  @spec start_link(keyword()) :: GenServer.on_start()
-  def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts)
-  end
-
-  @doc """
-  Builds a status snapshot without starting a process.
-  """
-  @spec new(keyword()) :: t()
-  def new(opts \\ []) do
-    %__MODULE__{
-      block_id: Keyword.get(opts, :block_id, :agent_tui_status),
-      live_enabled: Keyword.get(opts, :live_enabled, true),
-      screen: Keyword.get(opts, :screen, Owl.LiveScreen)
-    }
-  end
+  @spec new() :: t()
+  def new, do: %__MODULE__{}
 
   @doc """
   Applies one core event to a status snapshot.
@@ -179,35 +144,38 @@ defmodule AgentTui.LiveStatus do
   def reduce_event(state, _event), do: state
 
   @doc """
-  Renders a status snapshot as plain iodata.
+  Renders one status line for the top of the screen.
   """
-  @spec render(t()) :: iodata()
-  def render(%__MODULE__{} = state) do
-    state
-    |> status_lines()
-    |> Enum.intersperse("\n")
+  @spec summary_line(t()) :: String.t()
+  def summary_line(%__MODULE__{} = state) do
+    [
+      "agent: ",
+      Atom.to_string(state.status),
+      session_segment(state),
+      turn_segment(state),
+      " | tools ",
+      Integer.to_string(map_size(state.active_tools)),
+      " | batches ",
+      Integer.to_string(map_size(state.active_batches)),
+      permission_segment(state)
+    ]
+    |> IO.iodata_to_binary()
   end
 
-  @impl true
-  def init(opts) do
-    state = new(opts)
-
-    if Keyword.get(opts, :subscribe, true) do
-      :ok = AgentCore.EventBus.subscribe()
-    end
-
-    add_block(state)
-    update_block(state)
-
-    {:ok, state}
-  end
-
-  @impl true
-  def handle_info({:agent_core_event, event}, state) do
-    next_state = reduce_event(state, event)
-    update_block(next_state)
-
-    {:noreply, next_state}
+  @doc """
+  Renders status panel lines for the `/status` command.
+  """
+  @spec panel_lines(t()) :: [String.t()]
+  def panel_lines(%__MODULE__{} = state) do
+    [
+      summary_line(state),
+      active_tools_line(state),
+      active_batches_line(state),
+      permission_line(state),
+      recent_line(state),
+      error_line(state)
+    ]
+    |> Enum.reject(&(&1 == ""))
   end
 
   defp clear_current_turn(%{current_turn: turn_id} = state, turn_id, status) do
@@ -228,102 +196,75 @@ defmodule AgentTui.LiveStatus do
 
   defp settle_status(state), do: state
 
-  defp add_block(%{live_enabled: false}), do: :ok
-  defp add_block(%{screen: nil}), do: :ok
+  defp session_segment(%{session_id: nil}), do: ""
+  defp session_segment(%{session_id: session_id}), do: [" | session ", session_id]
 
-  defp add_block(state) do
-    if screen_available?(state.screen) do
-      Owl.LiveScreen.add_block(state.screen, state.block_id, state: state, render: &render/1)
-    end
+  defp turn_segment(%{current_turn: nil}), do: ""
+  defp turn_segment(%{current_turn: turn_id}), do: [" | turn ", turn_id]
+
+  defp permission_segment(%{permission: %{status: :pending}}), do: " | permission pending"
+  defp permission_segment(_state), do: ""
+
+  defp active_tools_line(%{active_tools: tools}) when map_size(tools) == 0, do: ""
+
+  defp active_tools_line(%{active_tools: tools}) do
+    tools =
+      tools
+      |> Enum.sort()
+      |> Enum.map_join("; ", &format_tool/1)
+
+    "tools: " <> tools
   end
 
-  defp update_block(%{live_enabled: false}), do: :ok
-  defp update_block(%{screen: nil}), do: :ok
+  defp active_batches_line(%{active_batches: batches}) when map_size(batches) == 0, do: ""
 
-  defp update_block(state) do
-    if screen_available?(state.screen) do
-      Owl.LiveScreen.update(state.screen, state.block_id, state)
-    end
+  defp active_batches_line(%{active_batches: batches}) do
+    batches =
+      batches
+      |> Enum.sort()
+      |> Enum.map_join("; ", &format_batch/1)
+
+    "batches: " <> batches
   end
 
-  defp screen_available?(screen) do
-    case GenServer.whereis(screen) do
-      pid when is_pid(pid) -> Process.alive?(pid)
-      _other -> false
-    end
-  end
-
-  defp status_lines(state) do
-    [
-      status_line(state),
-      batches_line(state),
-      tools_line(state),
-      permission_line(state),
-      recent_line(state),
-      error_line(state)
-    ]
-    |> Enum.reject(&(&1 == []))
-  end
-
-  defp status_line(%{current_turn: turn_id, status: :running}) when is_binary(turn_id) do
-    ["agent: running turn ", turn_id]
-  end
-
-  defp status_line(%{session_id: session_id, status: status}) when is_binary(session_id) do
-    ["agent: ", Atom.to_string(status), " session ", session_id]
-  end
-
-  defp status_line(%{status: status}) do
-    ["agent: ", Atom.to_string(status)]
-  end
-
-  defp batches_line(%{active_batches: batches}) when map_size(batches) == 0, do: []
-
-  defp batches_line(%{active_batches: batches}) do
-    ["batches: ", batches |> Enum.sort() |> Enum.map_intersperse("; ", &format_batch/1)]
-  end
-
-  defp tools_line(%{active_tools: tools}) when map_size(tools) == 0, do: []
-
-  defp tools_line(%{active_tools: tools}) do
-    ["tools: ", tools |> Enum.sort() |> Enum.map_intersperse("; ", &format_tool/1)]
-  end
-
-  defp permission_line(%{permission: nil}), do: []
+  defp permission_line(%{permission: nil}), do: ""
 
   defp permission_line(%{permission: %{status: :pending} = permission}) do
-    ["permission: ", permission.request_id, " pending ", inspect(permission.action)]
+    "permission: #{permission.request_id} pending #{inspect(permission.action)}"
   end
 
   defp permission_line(%{permission: %{status: :resolved} = permission}) do
-    ["permission: ", permission.request_id, " resolved ", inspect(permission.decision)]
+    "permission: #{permission.request_id} resolved #{inspect(permission.decision)}"
   end
 
-  defp recent_line(%{last_tool: nil, last_batch: nil}), do: []
+  defp recent_line(%{last_tool: nil, last_batch: nil}), do: ""
 
   defp recent_line(%{last_tool: {_call_id, name, status, summary}}) do
-    ["last tool: ", name, " ", inspect(status), " ", to_string(summary)]
+    "last tool: #{name} #{inspect(status)} #{format_summary(summary)}"
   end
 
   defp recent_line(%{last_batch: {batch_id, status}}) do
-    ["last batch: ", batch_id, " ", inspect(status)]
+    "last batch: #{batch_id} #{inspect(status)}"
   end
 
-  defp error_line(%{last_error: nil}), do: []
+  defp error_line(%{last_error: nil}), do: ""
 
   defp error_line(%{last_error: {scope, reason}}) do
-    ["error: ", inspect(scope), " ", inspect(reason)]
+    "error: #{inspect(scope)} #{inspect(reason)}"
   end
 
+  defp format_summary(summary) when is_binary(summary), do: summary
+  defp format_summary(summary), do: inspect(summary)
+
   defp format_batch({batch_id, %{count: count}}) do
-    [batch_id, " (", Integer.to_string(count), " calls)"]
+    "#{batch_id} (#{count} calls)"
   end
 
   defp format_tool({call_id, %{name: name, output_bytes: 0}}) do
-    [name, "(", call_id, ")"]
+    "#{name}(#{call_id})"
   end
 
   defp format_tool({call_id, %{name: name, output_bytes: bytes}}) do
-    [name, "(", call_id, ", ", Integer.to_string(bytes), " B)"]
+    "#{name}(#{call_id}, #{bytes} B)"
   end
 end

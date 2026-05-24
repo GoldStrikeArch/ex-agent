@@ -9,14 +9,26 @@ defmodule AgentCore.Config do
   @type permission_mode :: :read_only | :workspace_write | :ask_before_shell | :trusted
 
   @type t :: %__MODULE__{
+          agent_dir: Path.t(),
+          auth_provider: atom() | nil,
+          base_url: String.t() | nil,
           model_provider: atom(),
           model: String.t(),
+          provider: atom(),
+          reasoning_effort: String.t() | nil,
+          timeout_ms: pos_integer(),
           workspace_root: Path.t(),
           permission_mode: permission_mode()
         }
 
-  defstruct model_provider: :mock,
+  defstruct agent_dir: nil,
+            auth_provider: nil,
+            base_url: nil,
+            model_provider: :mock,
             model: "mock",
+            provider: :mock,
+            reasoning_effort: nil,
+            timeout_ms: 120_000,
             workspace_root: nil,
             permission_mode: :read_only
 
@@ -34,12 +46,23 @@ defmodule AgentCore.Config do
            parse_permission_mode(Keyword.get(values, :permission_mode, :read_only)) do
       {:ok,
        %__MODULE__{
+         agent_dir: Keyword.get_lazy(values, :agent_dir, &default_agent_dir/0),
+         auth_provider: Keyword.get(values, :auth_provider),
+         base_url: Keyword.get(values, :base_url),
          model_provider: Keyword.get(values, :model_provider, :mock),
          model: Keyword.get(values, :model, "mock"),
+         provider: Keyword.get(values, :provider, Keyword.get(values, :model_provider, :mock)),
+         reasoning_effort: Keyword.get(values, :reasoning_effort),
+         timeout_ms: Keyword.get(values, :timeout_ms, 120_000),
          workspace_root: Keyword.get_lazy(values, :workspace_root, &File.cwd!/0),
          permission_mode: permission_mode
        }}
     end
+  end
+
+  defp default_agent_dir do
+    System.get_env("ELIXIR_AGENT_DIR") ||
+      Path.join([System.user_home!(), ".elixir-agent", "agent"])
   end
 
   defp parse_permission_mode(mode)

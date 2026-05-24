@@ -23,6 +23,9 @@ defmodule AgentCore.MixProject do
   end
 
   defp deps do
-    []
+    [
+      {:req, "~> 0.5.18"},
+      {:plug_cowboy, "~> 2.8"}
+    ]
   end
 end

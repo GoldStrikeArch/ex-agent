@@ -9,9 +9,16 @@ defmodule AgentCore.ToolCallTest do
                args: %{path: "mix.exs"}
              })
 
-    assert {:ok, %{id: "tool-2", name: "grep", args: %{"pattern" => "defmodule"}}} =
+    assert {:ok,
+            %{
+              id: "tool-2",
+              provider_id: "fc_2",
+              name: "grep",
+              args: %{"pattern" => "defmodule"}
+            }} =
              AgentCore.ToolCall.normalize(%{
                "id" => "tool-2",
+               "provider_id" => "fc_2",
                "name" => "grep",
                "args" => %{"pattern" => "defmodule"}
              })

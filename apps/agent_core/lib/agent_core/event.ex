@@ -335,6 +335,7 @@ defmodule AgentCore.Event do
   defp normalize_key("name"), do: :name
   defp normalize_key("output"), do: :output
   defp normalize_key("path"), do: :path
+  defp normalize_key("provider_id"), do: :provider_id
   defp normalize_key("reason"), do: :reason
   defp normalize_key("role"), do: :role
   defp normalize_key("safety"), do: :safety

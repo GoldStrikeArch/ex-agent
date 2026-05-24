@@ -20,7 +20,8 @@ defmodule AgentCore.ToolCall do
   @type t :: %{
           required(:id) => String.t(),
           required(:name) => String.t(),
-          required(:args) => map()
+          required(:args) => map(),
+          optional(:provider_id) => String.t()
         }
 
   @doc """
@@ -30,28 +31,31 @@ defmodule AgentCore.ToolCall do
   tuples so provider adapters can pass raw decoded JSON without raising.
   """
   @spec normalize(term()) :: {:ok, t()} | {:error, term()}
-  def normalize(%{id: id, name: name, args: args}), do: normalize_values(id, name, args)
+  def normalize(%{id: id, name: name, args: args} = call),
+    do: normalize_values(id, name, args, call)
 
-  def normalize(%{"id" => id, "name" => name, "args" => args}),
-    do: normalize_values(id, name, args)
+  def normalize(%{"id" => id, "name" => name, "args" => args} = call),
+    do: normalize_values(id, name, args, call)
 
-  def normalize(%{id: id, name: name, arguments: args}), do: normalize_values(id, name, args)
+  def normalize(%{id: id, name: name, arguments: args} = call),
+    do: normalize_values(id, name, args, call)
 
-  def normalize(%{"id" => id, "name" => name, "arguments" => args}) do
-    normalize_values(id, name, args)
+  def normalize(%{"id" => id, "name" => name, "arguments" => args} = call) do
+    normalize_values(id, name, args, call)
   end
 
-  def normalize(%{name: name, args: args}), do: normalize_values(new_tool_call_id(), name, args)
+  def normalize(%{name: name, args: args} = call),
+    do: normalize_values(new_tool_call_id(), name, args, call)
 
-  def normalize(%{"name" => name, "args" => args}) do
-    normalize_values(new_tool_call_id(), name, args)
+  def normalize(%{"name" => name, "args" => args} = call) do
+    normalize_values(new_tool_call_id(), name, args, call)
   end
 
-  def normalize(%{name: name, arguments: args}),
-    do: normalize_values(new_tool_call_id(), name, args)
+  def normalize(%{name: name, arguments: args} = call),
+    do: normalize_values(new_tool_call_id(), name, args, call)
 
-  def normalize(%{"name" => name, "arguments" => args}) do
-    normalize_values(new_tool_call_id(), name, args)
+  def normalize(%{"name" => name, "arguments" => args} = call) do
+    normalize_values(new_tool_call_id(), name, args, call)
   end
 
   def normalize(call), do: {:error, {:invalid_tool_call, call}}
@@ -68,14 +72,25 @@ defmodule AgentCore.ToolCall do
 
   def normalize_all(calls), do: {:error, {:invalid_tool_calls, calls}}
 
-  defp normalize_values(id, name, args)
+  defp normalize_values(id, name, args, call)
        when is_binary(id) and id != "" and is_binary(name) and name != "" and is_map(args) do
-    {:ok, %{id: id, name: name, args: args}}
+    base = %{id: id, name: name, args: args}
+
+    {:ok, maybe_put_provider_id(base, provider_id(call))}
   end
 
-  defp normalize_values(id, name, args) do
+  defp normalize_values(id, name, args, _call) do
     {:error, {:invalid_tool_call, %{id: id, name: name, args: args}}}
   end
+
+  defp provider_id(call), do: Map.get(call, :provider_id, Map.get(call, "provider_id"))
+
+  defp maybe_put_provider_id(call, provider_id)
+       when is_binary(provider_id) and provider_id != "" do
+    Map.put(call, :provider_id, provider_id)
+  end
+
+  defp maybe_put_provider_id(call, _provider_id), do: call
 
   defp normalize_next(call, {:ok, calls}) do
     case normalize(call) do
