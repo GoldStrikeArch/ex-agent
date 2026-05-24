@@ -17,10 +17,19 @@ defmodule AgentCoreTest do
            ] = messages
 
     assert_receive {:agent_core_event, {:session_started, %{session_id: _session_id}}}
-    assert_receive {:agent_core_event, {:user_message, "hello"}}
-    assert_receive {:agent_core_event, {:assistant_message_started, ^message_id}}
-    assert_receive {:agent_core_event, {:assistant_delta, ^message_id, "Mock response: hello"}}
-    assert_receive {:agent_core_event, {:assistant_message_finished, ^message_id}}
+    assert_receive {:agent_core_event, {:agent_started, _session_id}}
+    assert_receive {:agent_core_event, {:turn_started, turn_id}}
+    assert_receive {:agent_core_event, {:message_started, _user_message_id, :user}}
+    assert_receive {:agent_core_event, {:message_finished, %{role: :user, content: "hello"}}}
+    assert_receive {:agent_core_event, {:message_started, ^message_id, :assistant}}
+    assert_receive {:agent_core_event, {:message_delta, ^message_id, "Mock response: hello"}}
+
+    assert_receive {:agent_core_event,
+                    {:message_finished,
+                     %{id: ^message_id, role: :assistant, content: "Mock response: hello"}}}
+
+    assert_receive {:agent_core_event, {:turn_finished, ^turn_id, %{status: :ok}}}
+    assert_receive {:agent_core_event, {:agent_finished, _session_id}}
 
     assert :ok = AgentCore.stop_session(session)
   end
@@ -34,10 +43,10 @@ defmodule AgentCoreTest do
 
     assert {:ok, logger} = AgentCore.EventLog.start_link(path: path)
 
-    AgentCore.EventBus.publish({:user_message, "logged"})
+    AgentCore.EventBus.publish({:message_delta, "message-test", "logged"})
 
     assert_eventually(fn ->
-      File.exists?(path) and File.read!(path) =~ ~S("event":"user_message")
+      File.exists?(path) and File.read!(path) =~ ~S("event":"message_delta")
     end)
 
     GenServer.stop(logger)

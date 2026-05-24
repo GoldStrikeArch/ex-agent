@@ -14,6 +14,12 @@ defmodule AgentCore.AgentSession do
 
   @type role :: :user | :assistant | :system | :tool
   @type message :: %{role: role(), content: String.t()}
+  @typep turn_context :: %{
+           turn_id: String.t(),
+           user_message_id: String.t(),
+           assistant_message_id: String.t(),
+           user_message: message()
+         }
 
   defstruct session_id: nil,
             messages: [],
@@ -62,39 +68,85 @@ defmodule AgentCore.AgentSession do
 
   @impl true
   def handle_call({:send_message, text}, _from, state) do
-    message_id = new_message_id()
-    user_message = %{role: :user, content: text}
-    messages = [user_message | state.messages]
+    context = new_turn_context(text)
+    messages = [context.user_message | state.messages]
 
-    AgentCore.EventBus.publish({:user_message, text})
-    AgentCore.EventBus.publish({:assistant_message_started, message_id})
+    publish_turn_started(state.session_id, context)
 
-    event_sink = fn delta ->
-      AgentCore.EventBus.publish({:assistant_delta, message_id, delta})
-    end
-
-    case state.model_client.stream_chat(
-           Enum.reverse(messages),
-           state.tools,
-           state.model_opts,
-           event_sink
-         ) do
-      {:ok, content} ->
-        AgentCore.EventBus.publish({:assistant_message_finished, message_id})
-
-        reply = %{message_id: message_id, content: content}
-        next_state = %{state | messages: [%{role: :assistant, content: content} | messages]}
-
-        {:reply, {:ok, reply}, next_state}
-
-      {:error, reason} ->
-        AgentCore.EventBus.publish({:error, :model, reason})
-        {:reply, {:error, reason}, %{state | messages: messages}}
-    end
+    result = stream_chat(state, messages, context)
+    handle_stream_result(result, state, messages, context)
   end
 
   def handle_call(:messages, _from, state) do
     {:reply, {:ok, Enum.reverse(state.messages)}, state}
+  end
+
+  @spec new_turn_context(String.t()) :: turn_context()
+  defp new_turn_context(text) do
+    %{
+      turn_id: new_turn_id(),
+      user_message_id: new_message_id(),
+      assistant_message_id: new_message_id(),
+      user_message: %{role: :user, content: text}
+    }
+  end
+
+  defp publish_turn_started(session_id, context) do
+    publish({:agent_started, session_id})
+    publish({:turn_started, context.turn_id})
+    publish({:message_started, context.user_message_id, :user})
+    publish_message_finished(context.user_message_id, context.user_message)
+    publish({:message_started, context.assistant_message_id, :assistant})
+  end
+
+  defp stream_chat(state, messages, context) do
+    state.model_client.stream_chat(
+      Enum.reverse(messages),
+      state.tools,
+      state.model_opts,
+      message_delta_sink(context.assistant_message_id)
+    )
+  end
+
+  defp message_delta_sink(message_id) do
+    fn delta -> publish({:message_delta, message_id, delta}) end
+  end
+
+  defp handle_stream_result({:ok, content}, state, messages, context) do
+    assistant_message = %{role: :assistant, content: content}
+
+    publish_message_finished(context.assistant_message_id, assistant_message)
+    publish_turn_finished(context.turn_id, :ok)
+    publish({:agent_finished, state.session_id})
+
+    reply = %{message_id: context.assistant_message_id, content: content}
+    next_state = %{state | messages: [assistant_message | messages]}
+
+    {:reply, {:ok, reply}, next_state}
+  end
+
+  defp handle_stream_result({:error, reason}, state, messages, context) do
+    publish({:error, :model, reason})
+    publish_turn_finished(context.turn_id, {:error, reason})
+    publish({:agent_finished, state.session_id})
+
+    {:reply, {:error, reason}, %{state | messages: messages}}
+  end
+
+  defp publish_message_finished(message_id, message) do
+    publish({:message_finished, Map.put(message, :id, message_id)})
+  end
+
+  defp publish_turn_finished(turn_id, :ok) do
+    publish({:turn_finished, turn_id, %{status: :ok}})
+  end
+
+  defp publish_turn_finished(turn_id, {:error, reason}) do
+    publish({:turn_finished, turn_id, %{status: :error, reason: reason}})
+  end
+
+  defp publish(event) do
+    AgentCore.EventBus.publish(event)
   end
 
   defp new_session_id do
@@ -103,6 +155,10 @@ defmodule AgentCore.AgentSession do
 
   defp new_message_id do
     "message-" <> unique_id()
+  end
+
+  defp new_turn_id do
+    "turn-" <> unique_id()
   end
 
   defp unique_id do
