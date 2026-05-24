@@ -1,0 +1,14 @@
+# The directory Mix will write compiled artifacts to.
+/_build/
+
+# If you run "mix test --cover", coverage assets end up here.
+/cover/
+
+# Dependencies fetched by Mix.
+/deps/
+
+# ElixirLS workspace data.
+/.elixir_ls/
+
+# Local OS/editor noise.
+.DS_Store
