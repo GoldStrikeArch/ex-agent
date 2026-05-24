@@ -1,4 +1,4 @@
-defmodule Core.Auth.OAuth.PKCE do
+defmodule LLM.Auth.OAuth.PKCE do
   @moduledoc """
   PKCE verifier/challenge generation for OAuth authorization-code flows.
   """

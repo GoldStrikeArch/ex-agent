@@ -1,10 +1,10 @@
-defmodule Core.Auth.StorageTest do
+defmodule AgentApp.Auth.StorageTest do
   use ExUnit.Case, async: true
 
   import Bitwise
 
-  alias Core.Auth.Credential
-  alias Core.Auth.Storage
+  alias LLM.Auth.Credential
+  alias AgentApp.Auth.Storage
 
   test "writes and reads OAuth credentials with secure file modes" do
     agent_dir = tmp_dir()

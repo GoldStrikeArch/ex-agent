@@ -48,12 +48,4 @@ defmodule Core do
   def run_tool(name, args, opts \\ []) do
     Core.ToolExecutor.run(name, args, opts)
   end
-
-  @doc """
-  Runs an OAuth login flow and stores the resulting credentials.
-  """
-  @spec login(:openai_codex, keyword()) :: {:ok, Core.Auth.Credential.t()} | {:error, term()}
-  def login(:openai_codex, opts \\ []) do
-    Core.Auth.OAuth.OpenAICodex.login(opts)
-  end
 end

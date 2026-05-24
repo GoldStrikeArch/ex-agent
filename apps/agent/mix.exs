@@ -26,6 +26,7 @@ defmodule AgentApp.MixProject do
   defp deps do
     [
       {:core, in_umbrella: true},
+      {:llm, in_umbrella: true},
       {:tui, in_umbrella: true}
     ]
   end

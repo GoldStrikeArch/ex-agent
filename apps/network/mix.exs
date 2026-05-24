@@ -1,9 +1,9 @@
-defmodule Core.MixProject do
+defmodule Network.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :core,
+      app: :network,
       version: "0.1.0",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
@@ -18,11 +18,14 @@ defmodule Core.MixProject do
   def application do
     [
       extra_applications: [:logger],
-      mod: {Core.Application, []}
+      mod: {Network.Application, []}
     ]
   end
 
   defp deps do
-    []
+    [
+      {:req, "~> 0.5.18"},
+      {:plug_cowboy, "~> 2.8"}
+    ]
   end
 end

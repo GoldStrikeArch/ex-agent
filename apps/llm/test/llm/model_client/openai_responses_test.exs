@@ -1,7 +1,8 @@
-defmodule Core.ModelClient.OpenAIResponsesTest do
+defmodule LLM.ModelClient.OpenAIResponsesTest do
   use ExUnit.Case, async: false
 
-  alias Core.ModelClient.OpenAIResponses
+  alias LLM.Auth.Credential
+  alias LLM.ModelClient.OpenAIResponses
 
   test "builds a Responses request and streams text deltas" do
     parent = self()
@@ -126,6 +127,28 @@ defmodule Core.ModelClient.OpenAIResponsesTest do
              %{type: "function_call", id: "fc_1", call_id: "call_1", name: "read_file"},
              %{type: "function_call_output", call_id: "call_1", output: "file contents"}
            ] = request.body.input
+  end
+
+  test "builds Codex requests from an injected credential" do
+    credential = %Credential{
+      access: "access-token",
+      refresh: "refresh-token",
+      expires_at: System.system_time(:millisecond) + 60_000,
+      account_id: "acct_1"
+    }
+
+    assert {:ok, request} =
+             OpenAIResponses.build_request(
+               [%{role: :user, content: "hello"}],
+               [],
+               model: "gpt-test",
+               provider: :openai_codex,
+               credential: credential
+             )
+
+    assert request.url == "https://chatgpt.com/backend-api/codex/responses"
+    assert {"authorization", "Bearer access-token"} in request.headers
+    assert {"chatgpt-account-id", "acct_1"} in request.headers
   end
 
   test "runs the session tool loop with a fake Responses transport" do

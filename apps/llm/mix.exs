@@ -1,9 +1,9 @@
-defmodule Core.MixProject do
+defmodule LLM.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :core,
+      app: :llm,
       version: "0.1.0",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
@@ -17,12 +17,14 @@ defmodule Core.MixProject do
 
   def application do
     [
-      extra_applications: [:logger],
-      mod: {Core.Application, []}
+      extra_applications: [:logger]
     ]
   end
 
   defp deps do
-    []
+    [
+      {:core, in_umbrella: true},
+      {:network, in_umbrella: true}
+    ]
   end
 end

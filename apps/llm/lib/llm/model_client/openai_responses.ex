@@ -1,4 +1,4 @@
-defmodule Core.ModelClient.OpenAIResponses do
+defmodule LLM.ModelClient.OpenAIResponses do
   @moduledoc """
   OpenAI Responses API model client.
 
@@ -9,7 +9,7 @@ defmodule Core.ModelClient.OpenAIResponses do
 
   @behaviour Core.ModelClient
 
-  alias Core.Auth.OAuth.OpenAICodex
+  alias LLM.Auth.Credential
 
   @openai_base_url "https://api.openai.com/v1"
   @codex_base_url "https://chatgpt.com/backend-api"
@@ -57,95 +57,30 @@ defmodule Core.ModelClient.OpenAIResponses do
   end
 
   defp stream_request(request, event_sink) do
-    parent = self()
-    chunk_ref = make_ref()
-
-    with {:ok, worker} <- start_stream_worker(parent, chunk_ref, request) do
-      collect_stream(worker, chunk_ref, initial_stream_state(), event_sink, request.timeout_ms)
-    end
-  end
-
-  defp start_stream_worker(parent, chunk_ref, request) do
-    result_ref = make_ref()
-
-    case Task.Supervisor.start_child(Core.ToolTaskSupervisor, fn ->
-           result = post_stream_request(request, parent, chunk_ref)
-           send(parent, {result_ref, result})
-         end) do
-      {:ok, pid} -> {:ok, stream_worker(pid, result_ref)}
-      {:ok, pid, _info} -> {:ok, stream_worker(pid, result_ref)}
-      {:error, reason} -> {:error, {:stream_worker_unavailable, reason}}
-    end
-  end
-
-  defp stream_worker(pid, result_ref) do
-    %{pid: pid, monitor_ref: Process.monitor(pid), result_ref: result_ref}
-  end
-
-  defp post_stream_request(request, parent, chunk_ref) do
-    Req.post(
-      url: request.url,
-      headers: request.headers,
-      json: request.body,
-      receive_timeout: request.timeout_ms,
-      into: fn {:data, data}, acc ->
-        send(parent, {chunk_ref, :chunk, data})
-        {:cont, acc}
-      end
+    request
+    |> Network.HTTP.Stream.post_json(initial_stream_state(),
+      on_chunk: &parse_chunk(&1, &2, event_sink),
+      on_success: &finish_stream_body(&1, &2, event_sink)
     )
+    |> map_network_error()
   end
 
-  defp collect_stream(worker, chunk_ref, state, event_sink, timeout_ms) do
-    %{monitor_ref: monitor_ref, result_ref: result_ref} = worker
-
-    receive do
-      {^chunk_ref, :chunk, chunk} ->
-        handle_stream_chunk(chunk, worker, chunk_ref, state, event_sink, timeout_ms)
-
-      {^result_ref, result} ->
-        handle_stream_result(result, worker, state, event_sink)
-
-      {:DOWN, ^monitor_ref, :process, _pid, reason} ->
-        {:error, {:openai_request_failed, reason}}
-    after
-      timeout_ms ->
-        stop_worker(worker, :timeout)
-    end
-  end
-
-  defp handle_stream_chunk(chunk, worker, chunk_ref, state, event_sink, timeout_ms) do
-    case parse_chunk(chunk, state, event_sink) do
-      {:ok, next_state} -> collect_stream(worker, chunk_ref, next_state, event_sink, timeout_ms)
-      {:error, reason} -> stop_worker(worker, reason)
-    end
-  end
-
-  defp handle_stream_result(result, worker, state, event_sink) do
-    Process.demonitor(worker.monitor_ref, [:flush])
-    finish_stream_result(result, state, event_sink)
-  end
-
-  defp finish_stream_result({:ok, %{status: status, body: body}}, state, event_sink)
-       when status in 200..299 do
+  defp finish_stream_body(body, state, event_sink) do
     state
     |> parse_chunk(to_string(body), event_sink)
     |> flush_buffer(event_sink)
     |> finish_stream_state()
   end
 
-  defp finish_stream_result({:ok, %{status: status, body: body}}, _state, _event_sink) do
+  defp map_network_error({:error, {:network_response_failed, status, body}}) do
     {:error, {:openai_response_failed, status, body}}
   end
 
-  defp finish_stream_result({:error, reason}, _state, _event_sink) do
+  defp map_network_error({:error, {:network_request_failed, reason}}) do
     {:error, {:openai_request_failed, reason}}
   end
 
-  defp stop_worker(%{pid: pid, monitor_ref: monitor_ref}, reason) do
-    Process.exit(pid, :kill)
-    Process.demonitor(monitor_ref, [:flush])
-    {:error, reason}
-  end
+  defp map_network_error(result), do: result
 
   defp required_model(opts) do
     case Keyword.get(opts, :model) || System.get_env("OPENAI_MODEL") do
@@ -171,7 +106,7 @@ defmodule Core.ModelClient.OpenAIResponses do
   end
 
   defp resolve_codex_auth(opts) do
-    with {:ok, credential} <- OpenAICodex.resolve_credential(opts) do
+    with {:ok, credential} <- codex_credential(opts) do
       {:ok,
        %{
          provider: :openai_codex,
@@ -180,6 +115,30 @@ defmodule Core.ModelClient.OpenAIResponses do
        }}
     end
   end
+
+  defp codex_credential(opts) do
+    cond do
+      match?(%Credential{}, Keyword.get(opts, :credential)) ->
+        {:ok, Keyword.fetch!(opts, :credential)}
+
+      resolver = Keyword.get(opts, :credential_resolver) ->
+        resolve_credential_with(resolver, opts)
+
+      true ->
+        {:error, :credential_resolver_required}
+    end
+  end
+
+  defp resolve_credential_with(resolver, opts) when is_function(resolver, 2) do
+    resolver.(:openai_codex, opts)
+  end
+
+  defp resolve_credential_with(resolver, _opts) when is_function(resolver, 1) do
+    resolver.(:openai_codex)
+  end
+
+  defp resolve_credential_with(resolver, _opts),
+    do: {:error, {:invalid_credential_resolver, resolver}}
 
   defp endpoint(:openai_codex, base_url), do: codex_endpoint(base_url || @codex_base_url)
   defp endpoint(_provider, base_url), do: openai_endpoint(base_url || @openai_base_url)
@@ -317,40 +276,28 @@ defmodule Core.ModelClient.OpenAIResponses do
   end
 
   defp initial_stream_state do
-    %{buffer: "", content: "", tool_calls: %{}}
+    %{sse: Network.SSE.new(), content: "", tool_calls: %{}}
   end
 
   defp parse_chunk("", state, _event_sink), do: {:ok, state}
 
   defp parse_chunk(chunk, state, event_sink) do
-    (state.buffer <> chunk)
-    |> split_sse_events()
-    |> reduce_sse_events(%{state | buffer: ""}, event_sink)
+    with {:ok, payloads, sse} <- Network.SSE.parse_chunk(state.sse, chunk) do
+      reduce_sse_payloads(payloads, %{state | sse: sse}, event_sink)
+    end
   end
 
-  defp flush_buffer({:ok, %{buffer: buffer} = state}, event_sink) do
-    if String.trim(buffer) == "" do
-      {:ok, %{state | buffer: ""}}
-    else
-      reduce_sse_events({[buffer], ""}, %{state | buffer: ""}, event_sink)
+  defp flush_buffer({:ok, state}, event_sink) do
+    with {:ok, payloads, sse} <- Network.SSE.flush(state.sse) do
+      reduce_sse_payloads(payloads, %{state | sse: sse}, event_sink)
     end
   end
 
   defp flush_buffer({:error, reason}, _event_sink), do: {:error, reason}
 
-  defp split_sse_events(buffer) do
-    case String.split(buffer, "\n\n", trim: false) do
-      [] -> {[], ""}
-      [partial] -> {[], partial}
-      parts -> {Enum.drop(parts, -1), List.last(parts)}
-    end
-  end
-
-  defp reduce_sse_events({events, partial}, state, event_sink) do
-    state = %{state | buffer: partial}
-
-    Enum.reduce_while(events, {:ok, state}, fn event, {:ok, next_state} ->
-      case parse_sse_event(event) do
+  defp reduce_sse_payloads(payloads, state, event_sink) do
+    Enum.reduce_while(payloads, {:ok, state}, fn payload, {:ok, next_state} ->
+      case parse_sse_payload(payload) do
         {:ok, nil} -> {:cont, {:ok, next_state}}
         {:ok, parsed} -> reduce_event(event_sink, parsed, {:ok, next_state})
         {:error, reason} -> {:halt, {:error, reason}}
@@ -358,19 +305,8 @@ defmodule Core.ModelClient.OpenAIResponses do
     end)
   end
 
-  defp parse_sse_event(event) do
-    data =
-      event
-      |> String.split("\n", trim: true)
-      |> Enum.filter(&String.starts_with?(&1, "data:"))
-      |> Enum.map_join("\n", fn "data:" <> data -> String.trim_leading(data) end)
-      |> String.trim()
-
-    cond do
-      data in ["", "[DONE]"] -> {:ok, nil}
-      true -> JSON.decode(data)
-    end
-  end
+  defp parse_sse_payload(payload) when payload in ["", "[DONE]"], do: {:ok, nil}
+  defp parse_sse_payload(payload), do: JSON.decode(payload)
 
   defp reduce_event(event_sink, event, {:ok, state}) do
     case event_type(event) do

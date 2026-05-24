@@ -26,7 +26,7 @@ defmodule AgentApp.CLI do
 
   defp login_openai_codex do
     result =
-      Core.login(:openai_codex,
+      AgentApp.Auth.login(:openai_codex,
         callbacks: %{
           on_auth: fn info ->
             IO.puts("Open this URL to authenticate:")
@@ -61,13 +61,14 @@ defmodule AgentApp.CLI do
 
     if flags[:model] do
       opts = [
-        model_client: Core.ModelClient.OpenAIResponses,
+        model_client: LLM.ModelClient.OpenAIResponses,
         model_opts:
           [
             model: flags[:model],
-            provider: flags[:provider] || :openai,
+            provider: flags[:provider],
             auth_provider: flags[:auth_provider],
-            base_url: flags[:base_url]
+            base_url: flags[:base_url],
+            credential_resolver: &AgentApp.Auth.resolve_credential/2
           ]
           |> Enum.reject(fn {_key, value} -> is_nil(value) end)
       ]

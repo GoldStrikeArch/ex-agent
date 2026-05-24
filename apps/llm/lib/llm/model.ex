@@ -1,4 +1,4 @@
-defmodule Core.Model do
+defmodule LLM.Model do
   @moduledoc """
   Provider/model configuration used by real model clients.
   """

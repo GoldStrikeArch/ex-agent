@@ -1,10 +1,10 @@
-defmodule Core.Auth.Credential do
+defmodule LLM.Auth.Credential do
   @moduledoc """
   Stored credential material for provider authentication.
 
   OAuth credentials store expiry as Unix milliseconds. Callers should treat the
-  access and refresh values as secrets and only serialize them through
-  `Core.Auth.Storage`.
+  access and refresh values as secrets and only serialize them through durable
+  storage owned by the composing application.
   """
 
   @enforce_keys [:access, :refresh, :expires_at, :account_id]

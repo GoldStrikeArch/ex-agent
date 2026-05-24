@@ -1,4 +1,4 @@
-defmodule Core.Auth.OAuth.OpenAICodex do
+defmodule LLM.Auth.OAuth.OpenAICodex do
   @moduledoc """
   OpenAI Codex/ChatGPT OAuth provider.
 
@@ -8,12 +8,11 @@ defmodule Core.Auth.OAuth.OpenAICodex do
   callback.
   """
 
-  @behaviour Core.Auth.OAuth.Provider
+  @behaviour LLM.Auth.OAuth.Provider
 
-  alias Core.Auth.Credential
-  alias Core.Auth.OAuth.CallbackServer
-  alias Core.Auth.OAuth.PKCE
-  alias Core.Auth.Storage
+  alias LLM.Auth.Credential
+  alias LLM.Auth.OAuth.PKCE
+  alias Network.LocalCallbackServer
 
   @authorize_url "https://auth.openai.com/oauth/authorize"
   @token_url "https://auth.openai.com/oauth/token"
@@ -29,37 +28,19 @@ defmodule Core.Auth.OAuth.OpenAICodex do
     flow = authorization_flow(opts)
 
     with {:ok, code} <- receive_authorization_code(flow, callbacks, opts),
-         {:ok, credential} <- exchange_code(code, flow.verifier, opts),
-         :ok <- Storage.write(:openai_codex, credential, opts) do
+         {:ok, credential} <- exchange_code(code, flow.verifier, opts) do
       {:ok, credential}
     end
   end
 
   @impl true
   def refresh(%Credential{} = credential, opts \\ []) do
-    with {:ok, refreshed} <- refresh_token(credential.refresh, opts),
-         :ok <- Storage.write(:openai_codex, refreshed, opts) do
-      {:ok, refreshed}
-    end
+    refresh_token(credential.refresh, opts)
   end
 
   @impl true
   def access_token(%Credential{access: access}) when is_binary(access), do: {:ok, access}
   def access_token(credential), do: {:error, {:invalid_credential, credential}}
-
-  @doc """
-  Reads the stored credential and refreshes it if needed.
-  """
-  @spec resolve_credential(keyword()) :: {:ok, Credential.t()} | {:error, term()}
-  def resolve_credential(opts \\ []) do
-    with {:ok, credential} <- Storage.read(:openai_codex, opts) do
-      if Credential.expired?(credential) do
-        refresh(credential, opts)
-      else
-        {:ok, credential}
-      end
-    end
-  end
 
   @doc """
   Builds the authorization URL and verifier state.
@@ -133,6 +114,11 @@ defmodule Core.Auth.OAuth.OpenAICodex do
     end
   end
 
+  @doc """
+  Exchanges an authorization code and PKCE verifier for OAuth credentials.
+  """
+  @spec exchange_code(String.t(), String.t(), keyword()) ::
+          {:ok, Credential.t()} | {:error, term()}
   def exchange_code(code, verifier, opts \\ []) when is_binary(code) and is_binary(verifier) do
     params = %{
       grant_type: "authorization_code",
@@ -147,6 +133,10 @@ defmodule Core.Auth.OAuth.OpenAICodex do
     |> credential_from_token_response()
   end
 
+  @doc """
+  Exchanges a refresh token for a new credential.
+  """
+  @spec refresh_token(String.t(), keyword()) :: {:ok, Credential.t()} | {:error, term()}
   def refresh_token(refresh_token, opts \\ []) when is_binary(refresh_token) do
     %{
       grant_type: "refresh_token",
@@ -172,12 +162,14 @@ defmodule Core.Auth.OAuth.OpenAICodex do
   end
 
   defp start_callback_server(state, opts) do
-    ref = :"agent-core-openai-codex-#{System.unique_integer([:positive])}"
+    ref = :"llm-openai-codex-#{System.unique_integer([:positive])}"
 
-    case CallbackServer.start_link(
+    case LocalCallbackServer.start_link(
            owner: self(),
            state: state,
            ref: ref,
+           message_tag: :llm_oauth_callback,
+           success_message: "OpenAI authentication completed. You can close this window.",
            port: Keyword.get(opts, :callback_port, 1455)
          ) do
       {:ok, server} -> {:ok, server}
@@ -187,8 +179,8 @@ defmodule Core.Auth.OAuth.OpenAICodex do
 
   defp wait_for_callback({:ok, %{ref: ref}}, timeout_ms) do
     receive do
-      {:core_oauth_callback, ^ref, {:ok, code}} -> {:ok, code}
-      {:core_oauth_callback, ^ref, {:error, reason}} -> {:error, reason}
+      {:llm_oauth_callback, ^ref, {:ok, code}} -> {:ok, code}
+      {:llm_oauth_callback, ^ref, {:error, reason}} -> {:error, reason}
     after
       timeout_ms -> {:error, :callback_timeout}
     end
@@ -231,7 +223,7 @@ defmodule Core.Auth.OAuth.OpenAICodex do
 
   defp validate_authorization_code({:error, reason}, _expected_state), do: {:error, reason}
 
-  defp stop_callback_server({:ok, %{ref: ref}}), do: CallbackServer.stop(ref)
+  defp stop_callback_server({:ok, %{ref: ref}}), do: LocalCallbackServer.stop(ref)
   defp stop_callback_server(_server), do: :ok
 
   defp notify_auth(%{on_auth: on_auth}, url) when is_function(on_auth, 1) do
@@ -254,11 +246,7 @@ defmodule Core.Auth.OAuth.OpenAICodex do
   end
 
   defp request_token(_transport, params, opts) do
-    Req.post(
-      url: Keyword.get(opts, :token_url, @token_url),
-      headers: [{"content-type", "application/x-www-form-urlencoded"}],
-      body: URI.encode_query(params)
-    )
+    Network.HTTP.post_form(Keyword.get(opts, :token_url, @token_url), params)
   end
 
   defp credential_from_token_response({:ok, %{status: status, body: body}})

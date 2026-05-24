@@ -1,4 +1,4 @@
-defmodule Core.Auth.Storage do
+defmodule AgentApp.Auth.Storage do
   @moduledoc """
   File-backed credential storage for provider auth.
 
@@ -7,7 +7,7 @@ defmodule Core.Auth.Storage do
   to avoid concurrent refresh races.
   """
 
-  alias Core.Auth.Credential
+  alias LLM.Auth.Credential
 
   @lock_stale_after_ms 30_000
   @lock_retry_sleep_ms 10

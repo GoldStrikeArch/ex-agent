@@ -1,9 +1,9 @@
-defmodule Core.Auth.OAuth.OpenAICodexTest do
+defmodule LLM.Auth.OAuth.OpenAICodexTest do
   use ExUnit.Case, async: true
 
-  alias Core.Auth.Credential
-  alias Core.Auth.OAuth.OpenAICodex
-  alias Core.Auth.OAuth.PKCE
+  alias LLM.Auth.Credential
+  alias LLM.Auth.OAuth.OpenAICodex
+  alias LLM.Auth.OAuth.PKCE
 
   test "generates PKCE verifier and challenge" do
     assert %{verifier: verifier, challenge: challenge} = PKCE.generate()
