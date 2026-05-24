@@ -18,7 +18,7 @@ defmodule Tui.TerminalApp do
 
     * `:submit_prompt` - callback invoked for user prompts.
     * `:initial_prompt` - optional text submitted after startup.
-    * `:backend` - TermUI backend selection, defaults to `:auto`.
+    * `:test_mode` - optional `{width, height}` headless terminal for tests.
   """
   @spec run(keyword()) :: :ok | {:error, term()}
   def run(opts \\ []) do
@@ -35,15 +35,15 @@ defmodule Tui.TerminalApp do
   end
 
   @doc """
-  Starts a TermUI runtime for embedding or tests.
+  Starts an ExRatatui runtime for embedding or tests.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     opts
-    |> Keyword.put(:root, Root)
-    |> Keyword.put_new(:backend, :auto)
+    |> Keyword.drop([:backend])
+    |> Keyword.put_new(:name, nil)
     |> Keyword.put_new(:task_supervisor, Tui.TaskSupervisor)
-    |> TermUI.Runtime.start_link()
+    |> Root.start_link()
   end
 
   @doc """
@@ -51,7 +51,8 @@ defmodule Tui.TerminalApp do
   """
   @spec send_event(GenServer.server(), tuple()) :: :ok
   def send_event(runtime, event) when is_tuple(event) do
-    TermUI.Runtime.send_message(runtime, :root, {:agent_event, event})
+    send(runtime, {:agent_event, event})
+    :ok
   end
 
   @doc """
@@ -59,7 +60,8 @@ defmodule Tui.TerminalApp do
   """
   @spec set_submit_prompt(GenServer.server(), submit_prompt()) :: :ok
   def set_submit_prompt(runtime, submit_prompt) when is_function(submit_prompt, 1) do
-    TermUI.Runtime.send_message(runtime, :root, {:set_submit_prompt, submit_prompt})
+    send(runtime, {:set_submit_prompt, submit_prompt})
+    :ok
   end
 
   @doc """
@@ -67,7 +69,8 @@ defmodule Tui.TerminalApp do
   """
   @spec submit_initial(GenServer.server(), String.t()) :: :ok
   def submit_initial(runtime, prompt) when is_binary(prompt) do
-    TermUI.Runtime.send_message(runtime, :root, {:submit_initial, prompt})
+    send(runtime, {:submit_initial, prompt})
+    :ok
   end
 
   @doc """
@@ -75,7 +78,12 @@ defmodule Tui.TerminalApp do
   """
   @spec shutdown(GenServer.server()) :: :ok
   def shutdown(runtime) do
-    TermUI.Runtime.shutdown(runtime)
+    GenServer.stop(runtime)
+    :ok
+  catch
+    :exit, {:noproc, _} -> :ok
+    :exit, :shutdown -> :ok
+    :exit, {:shutdown, _} -> :ok
   end
 
   @doc """

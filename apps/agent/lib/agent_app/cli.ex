@@ -106,8 +106,7 @@ defmodule AgentApp.CLI do
   defp run_terminal_app(session_opts, initial_prompt) do
     case AgentApp.Interactive.run(
            session_opts: session_opts,
-           initial_prompt: initial_prompt,
-           backend: :auto
+           initial_prompt: initial_prompt
          ) do
       :ok ->
         :ok

@@ -24,7 +24,7 @@ defmodule Tui.MixProject do
 
   defp deps do
     [
-      {:term_ui, "~> 1.0.0-rc"}
+      {:ex_ratatui, "~> 0.10"}
     ]
   end
 end

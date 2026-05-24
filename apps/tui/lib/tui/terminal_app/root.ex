@@ -1,16 +1,19 @@
 defmodule Tui.TerminalApp.Root do
   @moduledoc """
-  TermUI root component for the agent terminal app.
+  ExRatatui root application for the agent terminal UI.
   """
 
-  use TermUI.Elm
+  use ExRatatui.App
 
+  alias ExRatatui.Event
+  alias ExRatatui.Frame
+  alias ExRatatui.Layout.Rect
+  alias ExRatatui.Style
+  alias ExRatatui.Widgets.Paragraph
   alias Tui.TerminalApp.CommandMenu
   alias Tui.TerminalApp.Prompt
   alias Tui.TerminalApp.Status
   alias Tui.TerminalApp.Transcript
-  alias TermUI.Event
-  alias TermUI.Renderer.Style
 
   defstruct height: 24,
             input: nil,
@@ -38,8 +41,11 @@ defmodule Tui.TerminalApp.Root do
           width: pos_integer()
         }
 
-  @impl true
-  def init(opts) do
+  @doc """
+  Builds the initial root state.
+  """
+  @spec new(keyword()) :: t()
+  def new(opts) do
     width = Keyword.get(opts, :width, 80)
     height = Keyword.get(opts, :height, 24)
 
@@ -55,31 +61,53 @@ defmodule Tui.TerminalApp.Root do
   end
 
   @impl true
+  def mount(opts) do
+    {:ok, new(opts)}
+  end
+
+  @impl true
+  def handle_event(event, state) do
+    event
+    |> event_to_msg(state)
+    |> apply_msg(state)
+  end
+
+  @impl true
+  def handle_info(msg, state) do
+    msg
+    |> reduce(state)
+    |> callback_result()
+  end
+
+  @doc """
+  Converts an ExRatatui terminal event into an internal UI message.
+  """
+  @spec event_to_msg(Event.Key.t() | Event.Resize.t() | term(), t()) :: {:msg, term()}
   def event_to_msg(%Event.Resize{width: width, height: height}, _state) do
     {:msg, {:resize, width, height}}
   end
 
-  def event_to_msg(%Event.Key{key: "c", modifiers: modifiers} = event, _state) do
-    if :ctrl in modifiers, do: {:msg, :quit}, else: {:msg, {:input_event, event}}
+  def event_to_msg(%Event.Key{code: "c", modifiers: modifiers} = event, _state) do
+    if ctrl?(modifiers), do: {:msg, :quit}, else: {:msg, {:input_event, event}}
   end
 
-  def event_to_msg(%Event.Key{key: :enter}, _state) do
+  def event_to_msg(%Event.Key{code: "enter"}, _state) do
     {:msg, :submit}
   end
 
-  def event_to_msg(%Event.Key{key: :up}, state) do
-    if command_menu_visible?(state), do: {:msg, {:move_command, -1}}, else: input_msg(:up)
+  def event_to_msg(%Event.Key{code: "up"} = event, state) do
+    if command_menu_visible?(state), do: {:msg, {:move_command, -1}}, else: input_msg(event)
   end
 
-  def event_to_msg(%Event.Key{key: :down}, state) do
-    if command_menu_visible?(state), do: {:msg, {:move_command, 1}}, else: input_msg(:down)
+  def event_to_msg(%Event.Key{code: "down"} = event, state) do
+    if command_menu_visible?(state), do: {:msg, {:move_command, 1}}, else: input_msg(event)
   end
 
-  def event_to_msg(%Event.Key{key: :tab}, state) do
-    if command_menu_visible?(state), do: {:msg, :complete_command}, else: input_msg(:tab)
+  def event_to_msg(%Event.Key{code: "tab"} = event, state) do
+    if command_menu_visible?(state), do: {:msg, :complete_command}, else: input_msg(event)
   end
 
-  def event_to_msg(%Event.Key{key: :escape}, state) do
+  def event_to_msg(%Event.Key{code: "esc"}, state) do
     if command_menu_visible?(state), do: {:msg, :close_command_menu}, else: {:msg, :close_panel}
   end
 
@@ -87,30 +115,33 @@ defmodule Tui.TerminalApp.Root do
     {:msg, {:input_event, event}}
   end
 
-  @impl true
-  def update({:resize, width, height}, state) do
+  @doc """
+  Applies one internal UI message to root state.
+  """
+  @spec reduce(term(), t()) :: {t(), [atom()]}
+  def reduce({:resize, width, height}, state) do
     state =
       state
       |> Map.put(:width, max(20, width))
       |> Map.put(:height, max(10, height))
       |> Map.update!(:input, &Prompt.resize(&1, prompt_width(width)))
 
-    {state}
+    {state, []}
   end
 
-  def update(:submit, state) do
+  def reduce(:submit, state) do
     submit_prompt_or_command(state)
   end
 
-  def update({:set_submit_prompt, submit_prompt}, state) when is_function(submit_prompt, 1) do
+  def reduce({:set_submit_prompt, submit_prompt}, state) when is_function(submit_prompt, 1) do
     {%{state | submit_prompt: submit_prompt}, []}
   end
 
-  def update({:submit_initial, prompt}, state) do
+  def reduce({:submit_initial, prompt}, state) do
     {submit_prompt(state, prompt), []}
   end
 
-  def update({:agent_event, event}, state) do
+  def reduce({:agent_event, event}, state) do
     state =
       %{
         state
@@ -121,7 +152,7 @@ defmodule Tui.TerminalApp.Root do
     {state, []}
   end
 
-  def update({:prompt_result, prompt_ref, result}, state) do
+  def reduce({:prompt_result, prompt_ref, result}, state) do
     pending_prompts = MapSet.delete(state.pending_prompts, prompt_ref)
 
     state =
@@ -132,13 +163,13 @@ defmodule Tui.TerminalApp.Root do
     {state, []}
   end
 
-  def update({:move_command, delta}, state) do
+  def reduce({:move_command, delta}, state) do
     prompt = Prompt.value(state.input)
     selected_command = CommandMenu.move(state.selected_command, delta, prompt)
     {%{state | selected_command: selected_command}, []}
   end
 
-  def update(:complete_command, state) do
+  def reduce(:complete_command, state) do
     prompt = Prompt.value(state.input)
 
     case CommandMenu.selected(prompt, state.selected_command) do
@@ -151,15 +182,15 @@ defmodule Tui.TerminalApp.Root do
     end
   end
 
-  def update(:close_command_menu, state) do
+  def reduce(:close_command_menu, state) do
     {%{state | input: Prompt.clear(state.input), selected_command: 0, notice: nil}, []}
   end
 
-  def update(:close_panel, state) do
+  def reduce(:close_panel, state) do
     {%{state | panel: nil, notice: nil}, []}
   end
 
-  def update({:input_event, event}, state) do
+  def reduce({:input_event, event}, state) do
     input = Prompt.handle_event(state.input, event)
     prompt = Prompt.value(input)
     selected_command = CommandMenu.clamp_index(state.selected_command, prompt)
@@ -167,23 +198,54 @@ defmodule Tui.TerminalApp.Root do
     {%{state | input: input, selected_command: selected_command}, []}
   end
 
-  def update(:quit, state), do: {state, [:quit]}
-
-  def update(_msg, state), do: {state, []}
+  def reduce(:quit, state), do: {state, [:quit]}
+  def reduce(_msg, state), do: {state, []}
 
   @impl true
+  def render(state, frame) do
+    scene(state, frame)
+  end
+
+  @doc """
+  Renders the current state into ExRatatui widgets.
+  """
+  @spec scene(t(), Frame.t()) :: [{ExRatatui.widget(), Rect.t()}]
+  def scene(state, %Frame{} = frame) do
+    width = max(1, frame.width)
+    height = max(1, frame.height)
+    layout = layout(state, width, height)
+
+    []
+    |> add_line("Elixir Agent", layout.header, style(:cyan, [:bold]))
+    |> add_line(Status.summary_line(state.status), layout.status, style(:dark_gray))
+    |> add_line(divider(width), layout.top_divider, style(:dark_gray))
+    |> add_lines(
+      transcript_lines(state, layout.transcript.width, layout.transcript.height),
+      layout.transcript,
+      %Style{}
+    )
+    |> add_line(divider(width), layout.bottom_divider, style(:dark_gray))
+    |> add_lines(panel_lines(state, width), layout.panel, style(:yellow, [:bold]))
+    |> add_lines(command_lines(state, width), layout.commands, style(:yellow, [:bold]))
+    |> add_prompt(state.input, layout.prompt)
+    |> add_line(footer_line(state), layout.footer, style(:dark_gray))
+    |> Enum.reverse()
+  end
+
+  @doc false
+  @spec view(t()) :: [{ExRatatui.widget(), Rect.t()}]
   def view(state) do
-    stack(:vertical, [
-      text(fit_line("Elixir Agent", state.width), style(:cyan, [:bold])),
-      text(fit_line(Status.summary_line(state.status), state.width), style(:bright_black)),
-      divider(state.width),
-      transcript_view(state),
-      divider(state.width),
-      panel_view(state),
-      command_menu_view(state),
-      prompt_view(state),
-      footer_view(state)
-    ])
+    scene(state, %Frame{width: state.width, height: state.height})
+  end
+
+  defp apply_msg({:msg, msg}, state) do
+    msg
+    |> reduce(state)
+    |> callback_result()
+  end
+
+  defp callback_result({state, actions}) do
+    if :quit in actions, do: {:stop, state}, else: {:noreply, state}
   end
 
   defp submit_prompt_or_command(state) do
@@ -248,7 +310,7 @@ defmodule Tui.TerminalApp.Root do
     with {:ok, _pid} <-
            start_prompt_task(state.task_supervisor, fn ->
              result = submit_prompt.(prompt)
-             TermUI.Runtime.send_message(runtime, :root, {:prompt_result, prompt_ref, result})
+             send(runtime, {:prompt_result, prompt_ref, result})
            end) do
       start_pending_prompt(state, prompt_ref)
     else
@@ -310,83 +372,124 @@ defmodule Tui.TerminalApp.Root do
     |> CommandMenu.visible?()
   end
 
-  defp input_msg(key), do: {:msg, {:input_event, Event.key(key)}}
+  defp ctrl?(modifiers), do: "ctrl" in modifiers or :ctrl in modifiers
 
-  defp transcript_view(state) do
-    height = transcript_height(state)
+  defp input_msg(event), do: {:msg, {:input_event, event}}
 
-    lines =
-      state.transcript
-      |> Transcript.visible_lines(state.width, height)
-      |> fill_lines(height)
+  defp layout(state, width, height) do
+    prompt_height = min(state.input.max_visible_lines, max(1, height - 5))
+    remaining = max(1, height - prompt_height - 5)
 
-    lines
-    |> Enum.map(&text(&1, nil))
-    |> then(&stack(:vertical, &1))
+    desired_panel_height = state |> panel_lines(width) |> desired_height(6)
+    panel_height = min(desired_panel_height, max(0, remaining - 1))
+    remaining = remaining - panel_height
+
+    desired_command_height = state |> command_lines(width) |> desired_height(7)
+    command_height = min(desired_command_height, max(0, remaining - 1))
+    transcript_height = max(1, remaining - command_height)
+
+    y = 0
+    header = rect(width, y, 1)
+    status = rect(width, y + 1, 1)
+    top_divider = rect(width, y + 2, 1)
+    transcript = rect(width, y + 3, transcript_height)
+    bottom_divider = rect(width, transcript.y + transcript.height, 1)
+    panel = rect(width, bottom_divider.y + 1, panel_height)
+    commands = rect(width, panel.y + panel.height, command_height)
+    prompt = rect(width, commands.y + commands.height, prompt_height)
+    footer = rect(width, prompt.y + prompt.height, 1)
+
+    %{
+      bottom_divider: bottom_divider,
+      commands: commands,
+      footer: footer,
+      header: header,
+      panel: panel,
+      prompt: prompt,
+      status: status,
+      top_divider: top_divider,
+      transcript: transcript
+    }
   end
 
-  defp panel_view(%{panel: nil}), do: empty()
-
-  defp panel_view(%{panel: :help} = state) do
-    render_panel("commands", CommandMenu.help_lines(), state.width)
+  defp add_line(widgets, line, rect, style) do
+    add_lines(widgets, [fit_line(line, rect.width)], rect, style)
   end
 
-  defp panel_view(%{panel: :status} = state) do
-    render_panel("status", Status.panel_lines(state.status), state.width)
+  defp add_lines(widgets, _lines, %{height: 0}, _style), do: widgets
+
+  defp add_lines(widgets, lines, rect, style) do
+    text =
+      lines
+      |> Enum.take(rect.height)
+      |> Enum.map(&fit_line(&1, rect.width))
+      |> Enum.join("\n")
+
+    add_widget(widgets, %Paragraph{text: text, style: style}, rect)
   end
 
-  defp command_menu_view(state) do
+  defp add_prompt(widgets, input, %{width: width, height: height} = rect)
+       when width > 2 and height > 0 do
+    prefix_rect = %{rect | width: 2}
+    input_rect = %{rect | x: rect.x + 2, width: width - 2}
+
+    widgets
+    |> add_widget(%Paragraph{text: "> ", style: style(:green, [:bold])}, prefix_rect)
+    |> add_widget(Prompt.render(input), input_rect)
+  end
+
+  defp add_prompt(widgets, _input, _rect), do: widgets
+
+  defp add_widget(widgets, _widget, %{width: width}) when width <= 0, do: widgets
+  defp add_widget(widgets, _widget, %{height: height}) when height <= 0, do: widgets
+  defp add_widget(widgets, widget, rect), do: [{widget, rect} | widgets]
+
+  defp transcript_lines(state, width, height) do
+    state.transcript
+    |> Transcript.visible_lines(width, height)
+    |> fill_lines(height)
+  end
+
+  defp panel_lines(%{panel: nil}, _width), do: []
+
+  defp panel_lines(%{panel: :help}, width) do
+    titled_lines("commands", CommandMenu.help_lines(), width)
+  end
+
+  defp panel_lines(%{panel: :status} = state, width) do
+    titled_lines("status", Status.panel_lines(state.status), width)
+  end
+
+  defp command_lines(state, width) do
     prompt = Prompt.value(state.input)
 
     prompt
-    |> CommandMenu.lines(state.selected_command, state.width)
+    |> CommandMenu.lines(state.selected_command, width)
     |> Enum.take(6)
     |> case do
-      [] -> empty()
-      lines -> render_panel("commands", lines, state.width)
+      [] -> []
+      lines -> titled_lines("commands", lines, width)
     end
   end
 
-  defp prompt_view(state) do
-    stack(:horizontal, [
-      text("> ", style(:green, [:bold])),
-      Prompt.render(state.input)
-    ])
-  end
-
-  defp footer_view(state) do
-    line =
-      state.notice ||
-        if MapSet.size(state.pending_prompts) > 0 do
-          "running..."
-        else
-          "Enter send | /status | /help | Ctrl+C quit"
-        end
-
-    text(fit_line(line, state.width), style(:bright_black))
-  end
-
-  defp render_panel(title, lines, width) do
-    nodes =
-      [
-        text(fit_line("[#{title}]", width), style(:yellow, [:bold]))
-        | Enum.map(lines, &text(fit_line(&1, width), nil))
-      ]
-
-    stack(:vertical, nodes)
-  end
-
-  defp transcript_height(state) do
-    panel_rows =
-      case {state.panel, command_menu_visible?(state)} do
-        {nil, false} -> 0
-        {nil, true} -> 7
-        {_panel, false} -> 6
-        {_panel, true} -> 12
+  defp footer_line(state) do
+    state.notice ||
+      if MapSet.size(state.pending_prompts) > 0 do
+        "running..."
+      else
+        "Enter send | /status | /help | Ctrl+C quit"
       end
-
-    max(4, state.height - panel_rows - 7)
   end
+
+  defp titled_lines(title, lines, width) do
+    [
+      fit_line("[#{title}]", width)
+      | Enum.map(lines, &fit_line(&1, width))
+    ]
+  end
+
+  defp desired_height([], _limit), do: 0
+  defp desired_height(lines, limit), do: min(length(lines), limit)
 
   defp fill_lines(lines, height) do
     padding = max(0, height - length(lines))
@@ -394,7 +497,11 @@ defmodule Tui.TerminalApp.Root do
   end
 
   defp divider(width) do
-    text(String.duplicate("-", max(1, width)), style(:bright_black))
+    String.duplicate("-", max(1, width))
+  end
+
+  defp rect(width, y, height) do
+    %Rect{x: 0, y: y, width: width, height: height}
   end
 
   defp prompt_width(width), do: max(10, width - 2)
@@ -406,8 +513,8 @@ defmodule Tui.TerminalApp.Root do
     |> Enum.join()
   end
 
-  defp style(color, attrs \\ []) do
-    Style.new(fg: color, attrs: attrs)
+  defp style(color, modifiers \\ []) do
+    %Style{fg: color, modifiers: modifiers}
   end
 
   defp result_notice({:ok, _reply}), do: nil

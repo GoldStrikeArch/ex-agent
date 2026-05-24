@@ -16,7 +16,7 @@ defmodule AgentApp.Interactive do
 
     * `:session_opts` - options passed to `Core.start_session/1`.
     * `:initial_prompt` - optional prompt submitted after session startup.
-    * `:backend` - TermUI backend selection, defaults to `:auto`.
+    * `:test_mode` - optional `{width, height}` headless TUI for tests.
   """
   @spec run(keyword()) :: :ok | {:error, term()}
   def run(opts \\ []) do
