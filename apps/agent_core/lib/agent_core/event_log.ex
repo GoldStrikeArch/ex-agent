@@ -18,6 +18,22 @@ defmodule AgentCore.EventLog do
     GenServer.start_link(__MODULE__, opts)
   end
 
+  @doc """
+  Reads a JSONL event log into tuple events.
+
+  Returns `{:error, {:invalid_log_line, line_number, reason}}` when a line
+  cannot be decoded or does not map to a known event.
+  """
+  @spec read_events(Path.t()) :: {:ok, [AgentCore.Event.t()]} | {:error, term()}
+  def read_events(path) do
+    with {:ok, contents} <- File.read(path) do
+      contents
+      |> String.split("\n", trim: true)
+      |> Enum.with_index(1)
+      |> decode_lines([])
+    end
+  end
+
   @impl true
   def init(opts) do
     path = Keyword.fetch!(opts, :path)
@@ -33,8 +49,8 @@ defmodule AgentCore.EventLog do
   def handle_info({:agent_core_event, event}, state) do
     line =
       event
-      |> event_record()
-      |> AgentCore.Json.encode!()
+      |> AgentCore.Event.to_record()
+      |> JSON.encode!()
 
     IO.write(state.io, [line, "\n"])
 
@@ -50,13 +66,14 @@ defmodule AgentCore.EventLog do
     :ok
   end
 
-  defp event_record(event) do
-    [event_name | payload] = Tuple.to_list(event)
+  defp decode_lines([], events), do: {:ok, Enum.reverse(events)}
 
-    %{
-      timestamp: DateTime.utc_now() |> DateTime.to_iso8601(),
-      event: event_name,
-      payload: payload
-    }
+  defp decode_lines([{line, line_number} | rest], events) do
+    with {:ok, record} <- JSON.decode(line),
+         {:ok, event} <- AgentCore.Event.from_record(record) do
+      decode_lines(rest, [event | events])
+    else
+      {:error, reason} -> {:error, {:invalid_log_line, line_number, reason}}
+    end
   end
 end

@@ -9,12 +9,19 @@ defmodule AgentTui.CLI do
   @spec main([String.t()]) :: :ok
   def main(args) do
     {:ok, _apps} = Application.ensure_all_started(:agent_core)
-    {:ok, _renderer} = AgentTui.ConsoleRenderer.start_link([])
 
-    args
-    |> Enum.join(" ")
-    |> String.trim()
-    |> run_prompt()
+    case args do
+      ["--replay", path] ->
+        AgentTui.Replay.render_file(path)
+
+      _args ->
+        {:ok, _renderer} = AgentTui.ConsoleRenderer.start_link([])
+
+        args
+        |> Enum.join(" ")
+        |> String.trim()
+        |> run_prompt()
+    end
   end
 
   defp run_prompt("") do

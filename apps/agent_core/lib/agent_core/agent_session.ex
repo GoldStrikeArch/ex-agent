@@ -61,7 +61,7 @@ defmodule AgentCore.AgentSession do
       tools: Keyword.get(opts, :tools, [])
     }
 
-    AgentCore.EventBus.publish({:session_started, %{session_id: state.session_id}})
+    publish(AgentCore.Event.session_started(%{session_id: state.session_id}))
 
     {:ok, state}
   end
@@ -92,11 +92,11 @@ defmodule AgentCore.AgentSession do
   end
 
   defp publish_turn_started(session_id, context) do
-    publish({:agent_started, session_id})
-    publish({:turn_started, context.turn_id})
-    publish({:message_started, context.user_message_id, :user})
+    publish(AgentCore.Event.agent_started(session_id))
+    publish(AgentCore.Event.turn_started(context.turn_id))
+    publish(AgentCore.Event.message_started(context.user_message_id, :user))
     publish_message_finished(context.user_message_id, context.user_message)
-    publish({:message_started, context.assistant_message_id, :assistant})
+    publish(AgentCore.Event.message_started(context.assistant_message_id, :assistant))
   end
 
   defp stream_chat(state, messages, context) do
@@ -109,7 +109,7 @@ defmodule AgentCore.AgentSession do
   end
 
   defp message_delta_sink(message_id) do
-    fn delta -> publish({:message_delta, message_id, delta}) end
+    fn delta -> publish(AgentCore.Event.message_delta(message_id, delta)) end
   end
 
   defp handle_stream_result({:ok, content}, state, messages, context) do
@@ -117,7 +117,7 @@ defmodule AgentCore.AgentSession do
 
     publish_message_finished(context.assistant_message_id, assistant_message)
     publish_turn_finished(context.turn_id, :ok)
-    publish({:agent_finished, state.session_id})
+    publish(AgentCore.Event.agent_finished(state.session_id))
 
     reply = %{message_id: context.assistant_message_id, content: content}
     next_state = %{state | messages: [assistant_message | messages]}
@@ -126,23 +126,23 @@ defmodule AgentCore.AgentSession do
   end
 
   defp handle_stream_result({:error, reason}, state, messages, context) do
-    publish({:error, :model, reason})
+    publish(AgentCore.Event.error(:model, reason))
     publish_turn_finished(context.turn_id, {:error, reason})
-    publish({:agent_finished, state.session_id})
+    publish(AgentCore.Event.agent_finished(state.session_id))
 
     {:reply, {:error, reason}, %{state | messages: messages}}
   end
 
   defp publish_message_finished(message_id, message) do
-    publish({:message_finished, Map.put(message, :id, message_id)})
+    publish(AgentCore.Event.message_finished(Map.put(message, :id, message_id)))
   end
 
   defp publish_turn_finished(turn_id, :ok) do
-    publish({:turn_finished, turn_id, %{status: :ok}})
+    publish(AgentCore.Event.turn_finished(turn_id, %{status: :ok}))
   end
 
   defp publish_turn_finished(turn_id, {:error, reason}) do
-    publish({:turn_finished, turn_id, %{status: :error, reason: reason}})
+    publish(AgentCore.Event.turn_finished(turn_id, %{status: :error, reason: reason}))
   end
 
   defp publish(event) do

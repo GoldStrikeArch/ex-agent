@@ -8,7 +8,7 @@ defmodule AgentCore.EventBus do
 
   use GenServer
 
-  @type event :: tuple()
+  @type event :: AgentCore.Event.t()
 
   defstruct subscribers: %{}
 

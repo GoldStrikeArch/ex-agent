@@ -39,4 +39,13 @@ defmodule AgentCore do
   def messages(pid) when is_pid(pid) do
     AgentCore.AgentSession.messages(pid)
   end
+
+  @doc """
+  Runs a registered tool through the deterministic executor.
+  """
+  @spec run_tool(String.t() | atom(), map(), keyword()) ::
+          {:ok, AgentCore.Tool.result()} | {:error, term()}
+  def run_tool(name, args, opts \\ []) do
+    AgentCore.ToolExecutor.run(name, args, opts)
+  end
 end
