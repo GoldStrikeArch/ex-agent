@@ -342,6 +342,8 @@ defmodule AgentCore.Event do
   defp normalize_key("status"), do: :status
   defp normalize_key("summary"), do: :summary
   defp normalize_key("text"), do: :text
+  defp normalize_key("tool_call_id"), do: :tool_call_id
+  defp normalize_key("tool_calls"), do: :tool_calls
   defp normalize_key("truncated"), do: :truncated
   defp normalize_key("type"), do: :type
   defp normalize_key(key), do: key

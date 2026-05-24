@@ -34,6 +34,99 @@ defmodule AgentCoreTest do
     assert :ok = AgentCore.stop_session(session)
   end
 
+  test "runs scripted model tool calls and records tool result messages" do
+    workspace =
+      Path.join(
+        System.tmp_dir!(),
+        "agent-core-session-tools-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(workspace)
+    File.write!(Path.join(workspace, "mix.exs"), "defmodule Sample do\nend\n")
+
+    on_exit(fn -> File.rm_rf(workspace) end)
+
+    :ok = AgentCore.EventBus.subscribe()
+
+    script = [
+      %{
+        tool_calls: [
+          %{id: "tool-read", name: "read_file", args: %{"path" => "mix.exs"}}
+        ]
+      }
+    ]
+
+    assert {:ok, session} =
+             AgentCore.start_session(workspace_root: workspace, model_opts: [script: script])
+
+    assert {:ok, %{message_id: final_message_id, content: content}} =
+             AgentCore.send_message(session, "read mix")
+
+    assert content =~ "Mock response after tool: defmodule Sample"
+
+    assert {:ok, messages} = AgentCore.messages(session)
+
+    assert [
+             %{role: :user, content: "read mix"},
+             %{
+               role: :assistant,
+               content: "",
+               tool_calls: [
+                 %{id: "tool-read", name: "read_file", args: %{"path" => "mix.exs"}}
+               ]
+             },
+             %{
+               role: :tool,
+               tool_call_id: "tool-read",
+               name: "read_file",
+               status: :ok,
+               content: "defmodule Sample do\nend\n",
+               summary: summary
+             },
+             %{role: :assistant, content: ^content}
+           ] = messages
+
+    assert summary =~ "read mix.exs"
+
+    assert_receive {:agent_core_event, {:session_started, %{session_id: _session_id}}}
+    assert_receive {:agent_core_event, {:agent_started, _session_id}}
+    assert_receive {:agent_core_event, {:turn_started, turn_id}}
+    assert_receive {:agent_core_event, {:message_started, _user_message_id, :user}}
+    assert_receive {:agent_core_event, {:message_finished, %{role: :user, content: "read mix"}}}
+    assert_receive {:agent_core_event, {:message_started, tool_request_message_id, :assistant}}
+
+    assert_receive {:agent_core_event,
+                    {:message_finished,
+                     %{
+                       id: ^tool_request_message_id,
+                       role: :assistant,
+                       tool_calls: [%{id: "tool-read", name: "read_file"}]
+                     }}}
+
+    assert_receive {:agent_core_event,
+                    {:tool_started, "tool-read", "read_file", %{"path" => "mix.exs"}}}
+
+    assert_receive {:agent_core_event, {:tool_output, "tool-read", "defmodule Sample do\nend\n"}}
+    assert_receive {:agent_core_event, {:tool_finished, "tool-read", :ok, tool_summary}}
+    assert tool_summary =~ "read mix.exs"
+    assert_receive {:agent_core_event, {:message_started, _tool_message_id, :tool}}
+
+    assert_receive {:agent_core_event,
+                    {:message_finished, %{role: :tool, tool_call_id: "tool-read", status: :ok}}}
+
+    assert_receive {:agent_core_event, {:message_started, ^final_message_id, :assistant}}
+    assert_receive {:agent_core_event, {:message_delta, ^final_message_id, ^content}}
+
+    assert_receive {:agent_core_event,
+                    {:message_finished,
+                     %{id: ^final_message_id, role: :assistant, content: ^content}}}
+
+    assert_receive {:agent_core_event, {:turn_finished, ^turn_id, %{status: :ok}}}
+    assert_receive {:agent_core_event, {:agent_finished, _session_id}}
+
+    assert :ok = AgentCore.stop_session(session)
+  end
+
   test "event log writes JSONL records" do
     path =
       Path.join(

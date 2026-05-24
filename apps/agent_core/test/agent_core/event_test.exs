@@ -27,4 +27,35 @@ defmodule AgentCore.EventTest do
 
     assert decoded == event
   end
+
+  test "round trips tool request and result messages" do
+    events = [
+      AgentCore.Event.message_finished(%{
+        id: "message-tools",
+        role: :assistant,
+        content: "",
+        tool_calls: [%{id: "tool-1", name: "read_file", args: %{path: "mix.exs"}}]
+      }),
+      AgentCore.Event.message_finished(%{
+        id: "message-result",
+        role: :tool,
+        tool_call_id: "tool-1",
+        name: "read_file",
+        status: :ok,
+        content: "contents",
+        summary: "read mix.exs"
+      })
+    ]
+
+    assert Enum.map(events, &round_trip/1) == events
+  end
+
+  defp round_trip(event) do
+    event
+    |> AgentCore.Event.to_record()
+    |> JSON.encode!()
+    |> JSON.decode!()
+    |> AgentCore.Event.from_record()
+    |> then(fn {:ok, decoded} -> decoded end)
+  end
 end

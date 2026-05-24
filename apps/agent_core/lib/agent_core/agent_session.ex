@@ -13,7 +13,15 @@ defmodule AgentCore.AgentSession do
   alias AgentCore.ModelClient.Mock
 
   @type role :: :user | :assistant | :system | :tool
-  @type message :: %{role: role(), content: String.t()}
+  @type message :: %{
+          required(:role) => role(),
+          required(:content) => String.t(),
+          optional(:tool_calls) => [AgentCore.ToolCall.t()],
+          optional(:tool_call_id) => String.t(),
+          optional(:name) => String.t(),
+          optional(:status) => AgentCore.Event.status(),
+          optional(:summary) => String.t()
+        }
   @typep turn_context :: %{
            turn_id: String.t(),
            user_message_id: String.t(),
@@ -25,7 +33,9 @@ defmodule AgentCore.AgentSession do
             messages: [],
             model_client: Mock,
             model_opts: [],
-            tools: []
+            tools: [],
+            workspace_root: nil,
+            max_tool_iterations: 4
 
   @doc """
   Starts an unsupervised session process.
@@ -58,7 +68,9 @@ defmodule AgentCore.AgentSession do
       session_id: Keyword.get_lazy(opts, :session_id, &new_session_id/0),
       model_client: Keyword.get(opts, :model_client, Mock),
       model_opts: Keyword.get(opts, :model_opts, []),
-      tools: Keyword.get(opts, :tools, [])
+      tools: Keyword.get_lazy(opts, :tools, &AgentCore.ToolRegistry.default_tools/0),
+      workspace_root: Keyword.get_lazy(opts, :workspace_root, &File.cwd!/0),
+      max_tool_iterations: Keyword.get(opts, :max_tool_iterations, 4)
     }
 
     publish(AgentCore.Event.session_started(%{session_id: state.session_id}))
@@ -73,8 +85,10 @@ defmodule AgentCore.AgentSession do
 
     publish_turn_started(state.session_id, context)
 
-    result = stream_chat(state, messages, context)
-    handle_stream_result(result, state, messages, context)
+    messages
+    |> Enum.reverse()
+    |> run_model_loop(state, context, 0, context.assistant_message_id)
+    |> handle_loop_result(state, context)
   end
 
   def handle_call(:messages, _from, state) do
@@ -96,15 +110,23 @@ defmodule AgentCore.AgentSession do
     publish(AgentCore.Event.turn_started(context.turn_id))
     publish(AgentCore.Event.message_started(context.user_message_id, :user))
     publish_message_finished(context.user_message_id, context.user_message)
-    publish(AgentCore.Event.message_started(context.assistant_message_id, :assistant))
   end
 
-  defp stream_chat(state, messages, context) do
+  defp run_model_loop(messages, state, context, tool_iterations, assistant_message_id) do
+    publish(AgentCore.Event.message_started(assistant_message_id, :assistant))
+
+    state
+    |> stream_chat(messages, assistant_message_id)
+    |> normalize_model_response()
+    |> continue_model_loop(messages, state, context, tool_iterations, assistant_message_id)
+  end
+
+  defp stream_chat(state, messages, assistant_message_id) do
     state.model_client.stream_chat(
-      Enum.reverse(messages),
-      state.tools,
+      messages,
+      AgentCore.ToolRegistry.schemas(state.tools),
       state.model_opts,
-      message_delta_sink(context.assistant_message_id)
+      message_delta_sink(assistant_message_id)
     )
   end
 
@@ -112,25 +134,168 @@ defmodule AgentCore.AgentSession do
     fn delta -> publish(AgentCore.Event.message_delta(message_id, delta)) end
   end
 
-  defp handle_stream_result({:ok, content}, state, messages, context) do
+  defp normalize_model_response({:ok, content}) when is_binary(content) do
+    {:ok, %{content: content, tool_calls: []}}
+  end
+
+  defp normalize_model_response({:ok, response}) when is_map(response) do
+    content = response_content(response)
+    tool_calls = Map.get(response, :tool_calls, Map.get(response, "tool_calls", []))
+
+    with {:ok, calls} <- AgentCore.ToolCall.normalize_all(tool_calls) do
+      {:ok, %{content: content, tool_calls: calls}}
+    end
+  end
+
+  defp normalize_model_response({:error, reason}), do: {:error, reason}
+  defp normalize_model_response(response), do: {:error, {:invalid_model_response, response}}
+
+  defp response_content(%{content: content}) when is_binary(content), do: content
+  defp response_content(%{"content" => content}) when is_binary(content), do: content
+  defp response_content(_response), do: ""
+
+  defp continue_model_loop(
+         {:ok, %{content: content, tool_calls: []}},
+         messages,
+         _state,
+         _context,
+         _tool_iterations,
+         assistant_message_id
+       ) do
     assistant_message = %{role: :assistant, content: content}
 
-    publish_message_finished(context.assistant_message_id, assistant_message)
+    publish_message_finished(assistant_message_id, assistant_message)
+
+    {:ok, %{message_id: assistant_message_id, content: content}, messages ++ [assistant_message]}
+  end
+
+  defp continue_model_loop(
+         {:ok, %{content: content, tool_calls: tool_calls}},
+         messages,
+         state,
+         context,
+         tool_iterations,
+         assistant_message_id
+       ) do
+    assistant_message = assistant_message(content, tool_calls)
+    publish_message_finished(assistant_message_id, assistant_message)
+
+    continue_after_tool_request(
+      messages,
+      assistant_message,
+      tool_calls,
+      state,
+      context,
+      tool_iterations
+    )
+  end
+
+  defp continue_model_loop(
+         {:error, reason},
+         messages,
+         _state,
+         _context,
+         _tool_iterations,
+         _assistant_message_id
+       ) do
+    {:error, reason, messages}
+  end
+
+  defp assistant_message("", tool_calls),
+    do: %{role: :assistant, content: "", tool_calls: tool_calls}
+
+  defp assistant_message(content, tool_calls) do
+    %{role: :assistant, content: content, tool_calls: tool_calls}
+  end
+
+  defp continue_after_tool_request(
+         messages,
+         assistant_message,
+         _tool_calls,
+         state,
+         _context,
+         tool_iterations
+       )
+       when tool_iterations >= state.max_tool_iterations do
+    {:error, {:max_tool_iterations_exceeded, state.max_tool_iterations},
+     messages ++ [assistant_message]}
+  end
+
+  defp continue_after_tool_request(
+         messages,
+         assistant_message,
+         tool_calls,
+         state,
+         context,
+         tool_iterations
+       ) do
+    tool_messages = run_tool_calls(tool_calls, state)
+    next_messages = messages ++ [assistant_message | tool_messages]
+
+    run_model_loop(next_messages, state, context, tool_iterations + 1, new_message_id())
+  end
+
+  defp run_tool_calls(tool_calls, state) do
+    Enum.map(tool_calls, &run_tool_call(&1, state))
+  end
+
+  defp run_tool_call(tool_call, state) do
+    result =
+      AgentCore.ToolExecutor.run(tool_call.name, tool_call.args,
+        tool_call_id: tool_call.id,
+        tools: state.tools,
+        workspace_root: state.workspace_root
+      )
+
+    tool_message = tool_result_message(tool_call, result)
+    tool_message_id = new_message_id()
+
+    publish(AgentCore.Event.message_started(tool_message_id, :tool))
+    publish_message_finished(tool_message_id, tool_message)
+    tool_message
+  end
+
+  defp tool_result_message(tool_call, {:ok, result}) do
+    %{
+      role: :tool,
+      tool_call_id: tool_call.id,
+      name: tool_call.name,
+      status: :ok,
+      content: tool_content(result),
+      summary: Map.get(result, :summary, "completed")
+    }
+  end
+
+  defp tool_result_message(tool_call, {:error, reason}) do
+    summary = inspect(reason, charlists: :as_lists)
+
+    %{
+      role: :tool,
+      tool_call_id: tool_call.id,
+      name: tool_call.name,
+      status: :error,
+      content: summary,
+      summary: summary
+    }
+  end
+
+  defp tool_content(%{output: output}) when is_binary(output), do: output
+  defp tool_content(%{summary: summary}) when is_binary(summary), do: summary
+  defp tool_content(result), do: inspect(result, charlists: :as_lists)
+
+  defp handle_loop_result({:ok, reply, messages}, state, context) do
     publish_turn_finished(context.turn_id, :ok)
     publish(AgentCore.Event.agent_finished(state.session_id))
 
-    reply = %{message_id: context.assistant_message_id, content: content}
-    next_state = %{state | messages: [assistant_message | messages]}
-
-    {:reply, {:ok, reply}, next_state}
+    {:reply, {:ok, reply}, %{state | messages: Enum.reverse(messages)}}
   end
 
-  defp handle_stream_result({:error, reason}, state, messages, context) do
+  defp handle_loop_result({:error, reason, messages}, state, context) do
     publish(AgentCore.Event.error(:model, reason))
     publish_turn_finished(context.turn_id, {:error, reason})
     publish(AgentCore.Event.agent_finished(state.session_id))
 
-    {:reply, {:error, reason}, %{state | messages: messages}}
+    {:reply, {:error, reason}, %{state | messages: Enum.reverse(messages)}}
   end
 
   defp publish_message_finished(message_id, message) do
