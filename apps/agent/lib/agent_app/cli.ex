@@ -70,7 +70,8 @@ defmodule AgentApp.CLI do
             base_url: flags[:base_url],
             credential_resolver: &AgentApp.Auth.resolve_credential/2
           ]
-          |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+          |> Enum.reject(fn {_key, value} -> is_nil(value) end),
+        permission_mode: :trusted
       ]
 
       {opts, prompt_args}

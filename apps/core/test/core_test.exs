@@ -127,6 +127,26 @@ defmodule CoreTest do
     assert :ok = Core.stop_session(session)
   end
 
+  test "configures an unconfigured session for later turns" do
+    assert {:ok, session} = Core.start_session(model_client: Core.ModelClient.Unconfigured)
+
+    assert {:error, :model_not_configured} = Core.send_message(session, "hello")
+
+    assert :ok =
+             Core.configure_model(session,
+               model_client: Core.ModelClient.Mock,
+               model_opts: [script: ["configured"]],
+               permission_mode: :trusted
+             )
+
+    assert {:ok, %{content: "configured"}} = Core.send_message(session, "hello again")
+
+    state = :sys.get_state(session)
+    assert state.permission_mode == :trusted
+
+    assert :ok = Core.stop_session(session)
+  end
+
   test "event log writes JSONL records" do
     path =
       Path.join(

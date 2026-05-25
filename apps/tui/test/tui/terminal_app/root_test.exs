@@ -41,5 +41,36 @@ defmodule Tui.TerminalApp.RootTest do
     assert state.notice == "submit failed: prompt callback is not configured"
   end
 
+  test "delegates model command through command handler" do
+    parent = self()
+
+    state =
+      Root.new(subscribe: false)
+      |> Map.put(:command_handler, fn command_id, context ->
+        send(parent, {:handled_command, command_id, context})
+        :ok
+      end)
+      |> Map.update!(:input, &Prompt.set_value(&1, "/model"))
+
+    {state, []} = Root.reduce(:submit, state)
+
+    assert Prompt.value(state.input) == ""
+    assert MapSet.size(state.pending_prompts) == 1
+    assert_receive {:handled_command, :model, %{prompt: "/model"}}
+    assert_receive {:command_result, _ref, :ok}
+  end
+
+  test "appends app notices to transcript" do
+    state = Root.new(subscribe: false)
+
+    {state, []} = Root.reduce({:append_notice, "model configured"}, state)
+
+    assert state.notice == "model configured"
+
+    assert Tui.TerminalApp.Transcript.visible_lines(state.transcript, 80, 4) == [
+             "model configured"
+           ]
+  end
+
   defp key(code), do: %Event.Key{code: code, kind: "press"}
 end

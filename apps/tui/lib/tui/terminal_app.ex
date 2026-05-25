@@ -10,6 +10,8 @@ defmodule Tui.TerminalApp do
   alias Tui.TerminalApp.Root
 
   @type submit_prompt :: (String.t() -> term())
+  @type command_context :: %{prompt: String.t()}
+  @type command_handler :: (atom(), command_context() -> term())
 
   @doc """
   Runs the terminal UI until the runtime exits.
@@ -61,6 +63,24 @@ defmodule Tui.TerminalApp do
   @spec set_submit_prompt(GenServer.server(), submit_prompt()) :: :ok
   def set_submit_prompt(runtime, submit_prompt) when is_function(submit_prompt, 1) do
     send(runtime, {:set_submit_prompt, submit_prompt})
+    :ok
+  end
+
+  @doc """
+  Installs the app-owned slash command handler.
+  """
+  @spec set_command_handler(GenServer.server(), command_handler()) :: :ok
+  def set_command_handler(runtime, command_handler) when is_function(command_handler, 2) do
+    send(runtime, {:set_command_handler, command_handler})
+    :ok
+  end
+
+  @doc """
+  Appends an app-level notice to the transcript without creating model events.
+  """
+  @spec append_notice(GenServer.server(), String.t()) :: :ok
+  def append_notice(runtime, text) when is_binary(text) do
+    send(runtime, {:append_notice, text})
     :ok
   end
 

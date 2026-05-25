@@ -11,7 +11,10 @@ defmodule Core.ToolRegistry do
   @default_tools [
     Core.Tools.ReadFile,
     Core.Tools.ListFiles,
-    Core.Tools.Grep
+    Core.Tools.Grep,
+    Core.Tools.Shell,
+    Core.Tools.WriteFile,
+    Core.Tools.EditFile
   ]
 
   @doc """

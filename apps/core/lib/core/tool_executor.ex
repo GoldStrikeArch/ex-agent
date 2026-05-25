@@ -23,8 +23,9 @@ defmodule Core.ToolExecutor do
     with {:ok, tool} <- Core.ToolRegistry.fetch(name, tools) do
       emit(Core.Event.tool_started(tool_call_id, tool.name(), args))
 
-      tool
-      |> safe_run(args, context)
+      tool.name()
+      |> authorize_tool(tool.safety(), context.permission_mode)
+      |> run_authorized_tool(tool, args, context)
       |> finish(tool_call_id, tool.name())
     else
       {:error, reason} = error ->
@@ -71,6 +72,13 @@ defmodule Core.ToolExecutor do
     exception -> {:error, {:exception, Exception.message(exception)}}
   end
 
+  defp authorize_tool(name, safety, permission_mode) do
+    Core.PermissionPolicy.authorize(permission_mode, name, safety)
+  end
+
+  defp run_authorized_tool(:ok, tool, args, context), do: safe_run(tool, args, context)
+  defp run_authorized_tool({:error, reason}, _tool, _args, _context), do: {:error, reason}
+
   defp emit_output(nil, _tool_call_id), do: :ok
   defp emit_output("", _tool_call_id), do: :ok
 
@@ -79,7 +87,11 @@ defmodule Core.ToolExecutor do
   end
 
   defp tool_context(opts) do
-    %{workspace_root: Keyword.get_lazy(opts, :workspace_root, &File.cwd!/0)}
+    %{
+      workspace_root: Keyword.get_lazy(opts, :workspace_root, &File.cwd!/0),
+      permission_mode: Keyword.get(opts, :permission_mode, :read_only),
+      file_lock_manager: Keyword.get(opts, :file_lock_manager, Core.FileLockManager)
+    }
   end
 
   defp truncate(output) when byte_size(output) <= @output_limit, do: output

@@ -41,6 +41,14 @@ defmodule Core do
   end
 
   @doc """
+  Reconfigures a live session model client for subsequent turns.
+  """
+  @spec configure_model(pid(), keyword()) :: :ok | {:error, term()}
+  def configure_model(pid, opts) when is_pid(pid) and is_list(opts) do
+    Core.AgentSession.configure_model(pid, opts)
+  end
+
+  @doc """
   Runs a registered tool through the deterministic executor.
   """
   @spec run_tool(String.t() | atom(), map(), keyword()) ::

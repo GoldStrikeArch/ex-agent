@@ -11,6 +11,7 @@ defmodule Tui.TerminalApp.CommandMenu do
 
   @commands [
     %{id: :help, label: "/help", description: "show command help"},
+    %{id: :model, label: "/model", description: "configure the model"},
     %{id: :status, label: "/status", description: "show session and tool state"},
     %{id: :clear, label: "/clear", description: "clear the transcript viewport"},
     %{id: :quit, label: "/quit", description: "exit the UI"}

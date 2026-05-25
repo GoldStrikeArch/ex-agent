@@ -6,7 +6,11 @@ defmodule Core.Tool do
   @type name :: String.t()
   @type safety :: :read_only | :write | :shell | :risky
   @type args :: map()
-  @type context :: %{workspace_root: Path.t()}
+  @type context :: %{
+          required(:workspace_root) => Path.t(),
+          optional(:permission_mode) => Core.PermissionPolicy.mode(),
+          optional(:file_lock_manager) => GenServer.server()
+        }
   @type result :: %{
           optional(:output) => String.t(),
           optional(:summary) => String.t(),

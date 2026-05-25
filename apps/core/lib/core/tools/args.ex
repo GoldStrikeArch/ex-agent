@@ -12,12 +12,32 @@ defmodule Core.Tools.Args do
     end
   end
 
+  def string(args, key) do
+    case get(args, key) do
+      value when is_binary(value) -> {:ok, value}
+      value -> {:error, {:invalid_argument, key, value}}
+    end
+  end
+
   def integer(args, key, default, min, max) do
     value = get(args, key, default)
 
     case parse_integer(value) do
       {:ok, integer} -> {:ok, integer |> Kernel.max(min) |> Kernel.min(max)}
       :error -> {:error, {:invalid_argument, key, value}}
+    end
+  end
+
+  def optional_integer(args, key, min, max) do
+    case get(args, key, :__missing__) do
+      :__missing__ ->
+        {:ok, nil}
+
+      value ->
+        case parse_integer(value) do
+          {:ok, integer} -> {:ok, integer |> Kernel.max(min) |> Kernel.min(max)}
+          :error -> {:error, {:invalid_argument, key, value}}
+        end
     end
   end
 

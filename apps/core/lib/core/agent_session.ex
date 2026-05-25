@@ -33,8 +33,10 @@ defmodule Core.AgentSession do
             messages: [],
             model_client: Mock,
             model_opts: [],
+            permission_mode: :read_only,
             tools: [],
             workspace_root: nil,
+            file_lock_manager: Core.FileLockManager,
             max_tool_iterations: 4
 
   @doc """
@@ -62,14 +64,27 @@ defmodule Core.AgentSession do
     GenServer.call(pid, :messages)
   end
 
+  @doc """
+  Reconfigures the model client used for subsequent turns.
+
+  Accepts `:model_client`, `:model_opts`, and optionally `:permission_mode`.
+  Existing values are preserved for omitted options.
+  """
+  @spec configure_model(pid(), keyword()) :: :ok | {:error, term()}
+  def configure_model(pid, opts) when is_pid(pid) and is_list(opts) do
+    GenServer.call(pid, {:configure_model, opts})
+  end
+
   @impl true
   def init(opts) do
     state = %__MODULE__{
       session_id: Keyword.get_lazy(opts, :session_id, &new_session_id/0),
       model_client: Keyword.get(opts, :model_client, Mock),
       model_opts: Keyword.get(opts, :model_opts, []),
+      permission_mode: Keyword.get(opts, :permission_mode, :read_only),
       tools: Keyword.get_lazy(opts, :tools, &Core.ToolRegistry.default_tools/0),
       workspace_root: Keyword.get_lazy(opts, :workspace_root, &File.cwd!/0),
+      file_lock_manager: Keyword.get(opts, :file_lock_manager, Core.FileLockManager),
       max_tool_iterations: Keyword.get(opts, :max_tool_iterations, 4)
     }
 
@@ -93,6 +108,10 @@ defmodule Core.AgentSession do
 
   def handle_call(:messages, _from, state) do
     {:reply, {:ok, Enum.reverse(state.messages)}, state}
+  end
+
+  def handle_call({:configure_model, opts}, _from, state) do
+    {:reply, :ok, configure_state(state, opts)}
   end
 
   @spec new_turn_context(String.t()) :: turn_context()
@@ -244,7 +263,9 @@ defmodule Core.AgentSession do
       Core.ToolExecutor.run(tool_call.name, tool_call.args,
         tool_call_id: tool_call.id,
         tools: state.tools,
-        workspace_root: state.workspace_root
+        workspace_root: state.workspace_root,
+        permission_mode: state.permission_mode,
+        file_lock_manager: state.file_lock_manager
       )
 
     tool_message = tool_result_message(tool_call, result)
@@ -301,6 +322,16 @@ defmodule Core.AgentSession do
   defp publish_message_finished(message_id, message) do
     publish(Core.Event.message_finished(Map.put(message, :id, message_id)))
   end
+
+  defp configure_state(state, opts) do
+    state
+    |> maybe_put(:model_client, Keyword.get(opts, :model_client, :__keep__))
+    |> maybe_put(:model_opts, Keyword.get(opts, :model_opts, :__keep__))
+    |> maybe_put(:permission_mode, Keyword.get(opts, :permission_mode, :__keep__))
+  end
+
+  defp maybe_put(state, _key, :__keep__), do: state
+  defp maybe_put(state, key, value), do: Map.put(state, key, value)
 
   defp publish_turn_finished(turn_id, :ok) do
     publish(Core.Event.turn_finished(turn_id, %{status: :ok}))
