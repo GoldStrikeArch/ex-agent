@@ -13,7 +13,9 @@ defmodule Tui.TerminalApp.Transcript do
             active_permissions: MapSet.new(),
             active_tools: %{},
             blocks: [],
-            max_blocks: 250
+            follow?: true,
+            max_blocks: 250,
+            top: 0
 
   @type tool_state :: %{
           name: String.t(),
@@ -26,8 +28,12 @@ defmodule Tui.TerminalApp.Transcript do
           active_permissions: term(),
           active_tools: %{String.t() => tool_state()},
           blocks: [Block.t()],
-          max_blocks: pos_integer()
+          follow?: boolean(),
+          max_blocks: pos_integer(),
+          top: non_neg_integer()
         }
+
+  @type scroll_direction :: :page_up | :page_down | :top | :bottom
 
   @doc """
   Builds an empty transcript.
@@ -200,18 +206,52 @@ defmodule Tui.TerminalApp.Transcript do
   end
 
   @doc """
-  Returns viewport-ready transcript lines.
+  Returns viewport-ready transcript lines for the current scroll position.
+
+  While following (the default), the most recent `height` lines are shown and
+  new content keeps the viewport pinned to the bottom. When the user has
+  scrolled up, the view stays anchored at `top` so streaming appends do not move
+  it.
   """
   @spec visible_lines(t(), pos_integer(), pos_integer()) :: [String.t()]
   def visible_lines(%__MODULE__{} = transcript, width, height)
       when is_integer(width) and width > 0 and is_integer(height) and height > 0 do
-    transcript.blocks
-    |> Enum.reverse()
-    |> Enum.flat_map(&block_lines(&1, width))
-    |> Enum.take(-height)
+    lines = all_lines(transcript, width)
+    total = length(lines)
+
+    if transcript.follow? or total <= height do
+      Enum.take(lines, -height)
+    else
+      top = clamp_top(transcript.top, total, height)
+
+      lines
+      |> Enum.drop(top)
+      |> Enum.take(height)
+    end
   end
 
   def visible_lines(%__MODULE__{}, _width, _height), do: []
+
+  @doc """
+  Scrolls the viewport. Reaching the bottom re-enables auto-follow.
+  """
+  @spec scroll(t(), scroll_direction(), pos_integer(), pos_integer()) :: t()
+  def scroll(%__MODULE__{} = transcript, direction, width, height)
+      when is_integer(width) and width > 0 and is_integer(height) and height > 0 do
+    total = transcript |> all_lines(width) |> length()
+    max_top = max(0, total - height)
+    current = if transcript.follow?, do: max_top, else: clamp_top(transcript.top, total, height)
+
+    top =
+      direction
+      |> next_top(current, max_top, height)
+      |> max(0)
+      |> min(max_top)
+
+    %{transcript | top: top, follow?: top >= max_top}
+  end
+
+  def scroll(%__MODULE__{} = transcript, _direction, _width, _height), do: transcript
 
   @doc """
   Clears the transcript.
@@ -223,7 +263,9 @@ defmodule Tui.TerminalApp.Transcript do
       | active_messages: %{},
         active_permissions: MapSet.new(),
         active_tools: %{},
-        blocks: []
+        blocks: [],
+        follow?: true,
+        top: 0
     }
   end
 
@@ -390,6 +432,23 @@ defmodule Tui.TerminalApp.Transcript do
 
   defp args_line(args) when args == %{}, do: ""
   defp args_line(args), do: "args #{inspect(args)}"
+
+  defp all_lines(transcript, width) do
+    transcript.blocks
+    |> Enum.reverse()
+    |> Enum.flat_map(&block_lines(&1, width))
+  end
+
+  defp clamp_top(top, total, height) do
+    top
+    |> max(0)
+    |> min(max(0, total - height))
+  end
+
+  defp next_top(:page_up, current, _max_top, height), do: current - height
+  defp next_top(:page_down, current, _max_top, height), do: current + height
+  defp next_top(:top, _current, _max_top, _height), do: 0
+  defp next_top(:bottom, _current, max_top, _height), do: max_top
 
   defp block_lines(%Block{kind: :system, body: []} = block, width) do
     wrap_line(block.title, width)

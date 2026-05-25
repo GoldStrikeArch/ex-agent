@@ -56,4 +56,48 @@ defmodule Tui.TerminalApp.TranscriptTest do
     assert rendered =~ "[done] permission resolved request-1"
     assert rendered =~ "[edit] edit preview lib/example.ex"
   end
+
+  test "follows the bottom by default and anchors when scrolled up" do
+    transcript =
+      Enum.reduce(1..10, Transcript.new(), fn n, acc ->
+        Transcript.append_event(acc, {:user_message, "line #{n}"})
+      end)
+
+    assert Transcript.visible_lines(transcript, 80, 3) == [
+             "user> line 8",
+             "user> line 9",
+             "user> line 10"
+           ]
+
+    scrolled = Transcript.scroll(transcript, :page_up, 80, 3)
+    refute scrolled.follow?
+
+    assert Transcript.visible_lines(scrolled, 80, 3) == [
+             "user> line 5",
+             "user> line 6",
+             "user> line 7"
+           ]
+
+    # appends while scrolled up do not move the anchored view
+    scrolled = Transcript.append_event(scrolled, {:user_message, "line 11"})
+
+    assert Transcript.visible_lines(scrolled, 80, 3) == [
+             "user> line 5",
+             "user> line 6",
+             "user> line 7"
+           ]
+
+    # jumping to the top, then back to the bottom re-follows
+    top = Transcript.scroll(scrolled, :top, 80, 3)
+
+    assert Transcript.visible_lines(top, 80, 3) == [
+             "user> line 1",
+             "user> line 2",
+             "user> line 3"
+           ]
+
+    bottom = Transcript.scroll(top, :bottom, 80, 3)
+    assert bottom.follow?
+    assert List.last(Transcript.visible_lines(bottom, 80, 3)) == "user> line 11"
+  end
 end

@@ -49,6 +49,27 @@ defmodule Tui.TerminalApp.Prompt do
   def clear(%__MODULE__{} = input), do: set_value(input, "")
 
   @doc """
+  Inserts a newline at the cursor, growing the prompt into a new line.
+  """
+  @spec insert_newline(t()) :: t()
+  def insert_newline(%__MODULE__{state: state} = input) do
+    :ok = ExRatatui.textarea_handle_key(state, "enter", [])
+    input
+  end
+
+  @doc """
+  Returns the cursor position as `{row, col}`.
+  """
+  @spec cursor(t()) :: {non_neg_integer(), non_neg_integer()}
+  def cursor(%__MODULE__{state: state}), do: ExRatatui.textarea_cursor(state)
+
+  @doc """
+  Returns the number of lines in the prompt.
+  """
+  @spec line_count(t()) :: pos_integer()
+  def line_count(%__MODULE__{state: state}), do: ExRatatui.textarea_line_count(state)
+
+  @doc """
   Replaces prompt text.
   """
   @spec set_value(t(), String.t()) :: t()

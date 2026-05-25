@@ -63,16 +63,33 @@ defmodule Tui.TerminalApp.Root do
     if ctrl?(modifiers), do: {:msg, :quit}, else: {:msg, {:input_event, event}}
   end
 
-  def event_to_msg(%Event.Key{code: "enter"}, _state) do
-    {:msg, :submit}
+  def event_to_msg(%Event.Key{code: "enter", modifiers: modifiers}, _state) do
+    if newline_modifier?(modifiers), do: {:msg, :insert_newline}, else: {:msg, :submit}
+  end
+
+  def event_to_msg(%Event.Key{code: "j", modifiers: modifiers} = event, _state) do
+    if ctrl?(modifiers), do: {:msg, :insert_newline}, else: input_msg(event)
+  end
+
+  def event_to_msg(%Event.Key{code: "l", modifiers: modifiers} = event, _state) do
+    if ctrl?(modifiers), do: {:msg, :clear_transcript}, else: input_msg(event)
+  end
+
+  def event_to_msg(%Event.Key{code: code} = _event, state)
+      when code in ~w(page_up page_down home end) do
+    {:msg, {:scroll, scroll_direction(code), transcript_height(state)}}
   end
 
   def event_to_msg(%Event.Key{code: "up"} = event, state) do
-    if State.command_menu_visible?(state), do: {:msg, {:move_command, -1}}, else: input_msg(event)
+    if State.command_menu_visible?(state),
+      do: {:msg, {:move_command, -1}},
+      else: {:msg, {:history_prev, event}}
   end
 
   def event_to_msg(%Event.Key{code: "down"} = event, state) do
-    if State.command_menu_visible?(state), do: {:msg, {:move_command, 1}}, else: input_msg(event)
+    if State.command_menu_visible?(state),
+      do: {:msg, {:move_command, 1}},
+      else: {:msg, {:history_next, event}}
   end
 
   def event_to_msg(%Event.Key{code: "tab"} = event, state) do
@@ -142,6 +159,20 @@ defmodule Tui.TerminalApp.Root do
   end
 
   defp ctrl?(modifiers), do: "ctrl" in modifiers or :ctrl in modifiers
+
+  defp newline_modifier?(modifiers) do
+    Enum.any?(~w(shift alt meta super hyper), &(&1 in modifiers)) or
+      Enum.any?([:shift, :alt, :meta, :super, :hyper], &(&1 in modifiers))
+  end
+
+  defp scroll_direction("page_up"), do: :page_up
+  defp scroll_direction("page_down"), do: :page_down
+  defp scroll_direction("home"), do: :top
+  defp scroll_direction("end"), do: :bottom
+
+  defp transcript_height(state) do
+    layout(state, state.width, state.height).transcript.height
+  end
 
   defp input_msg(event), do: {:msg, {:input_event, event}}
 

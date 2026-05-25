@@ -113,5 +113,80 @@ defmodule Tui.TerminalApp.RootTest do
            ]
   end
 
+  test "plain enter submits but modified enter inserts a newline" do
+    state = Root.new(subscribe: false)
+
+    assert {:msg, :submit} = Root.event_to_msg(key("enter"), state)
+    assert {:msg, :insert_newline} = Root.event_to_msg(key("enter", ["alt"]), state)
+    assert {:msg, :insert_newline} = Root.event_to_msg(key("enter", ["shift"]), state)
+    assert {:msg, :insert_newline} = Root.event_to_msg(key("j", ["ctrl"]), state)
+  end
+
+  test "inserts a newline into the prompt without submitting" do
+    state = Root.new(subscribe: false)
+
+    {state, []} = Root.reduce({:input_event, key("a")}, state)
+    {state, []} = Root.reduce(:insert_newline, state)
+    {state, []} = Root.reduce({:input_event, key("b")}, state)
+
+    assert Prompt.value(state.input) == "a\nb"
+  end
+
+  test "navigates submitted prompt history with up and down" do
+    state =
+      Root.new(subscribe: false)
+      |> Map.put(:submit_prompt, fn _prompt -> :ok end)
+
+    state = submit_text(state, "first")
+    state = submit_text(state, "second")
+
+    # cursor sits on the (empty) first line, so up recalls history
+    {state, []} = Root.reduce({:history_prev, key("up")}, state)
+    assert Prompt.value(state.input) == "second"
+
+    {state, []} = Root.reduce({:history_prev, key("up")}, state)
+    assert Prompt.value(state.input) == "first"
+
+    {state, []} = Root.reduce({:history_next, key("down")}, state)
+    assert Prompt.value(state.input) == "second"
+
+    # stepping past the newest entry restores the in-progress draft
+    {state, []} = Root.reduce({:history_next, key("down")}, state)
+    assert Prompt.value(state.input) == ""
+  end
+
+  test "scrolls the transcript and re-follows at the bottom" do
+    state = Root.new(subscribe: false, width: 80, height: 24)
+
+    state =
+      Enum.reduce(1..40, state, fn n, acc ->
+        {acc, []} = Root.reduce({:agent_event, {:user_message, "msg #{n}"}}, acc)
+        acc
+      end)
+
+    {scrolled, []} = Root.reduce({:scroll, :page_up, 5}, state)
+    refute scrolled.transcript.follow?
+
+    {bottom, []} = Root.reduce({:scroll, :bottom, 5}, scrolled)
+    assert bottom.transcript.follow?
+  end
+
+  test "ctrl+l clears the transcript viewport" do
+    state = Root.new(subscribe: false)
+    {state, []} = Root.reduce({:agent_event, {:user_message, "hello"}}, state)
+
+    assert {:msg, :clear_transcript} = Root.event_to_msg(key("l", ["ctrl"]), state)
+
+    {state, []} = Root.reduce(:clear_transcript, state)
+    assert Tui.TerminalApp.Transcript.visible_lines(state.transcript, 80, 4) == []
+  end
+
+  defp submit_text(state, text) do
+    state = Map.update!(state, :input, &Prompt.set_value(&1, text))
+    {state, []} = Root.reduce(:submit, state)
+    state
+  end
+
   defp key(code), do: %Event.Key{code: code, kind: "press"}
+  defp key(code, modifiers), do: %Event.Key{code: code, kind: "press", modifiers: modifiers}
 end

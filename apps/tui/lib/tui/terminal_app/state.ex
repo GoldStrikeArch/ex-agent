@@ -12,8 +12,13 @@ defmodule Tui.TerminalApp.State do
   alias Tui.TerminalApp.Status
   alias Tui.TerminalApp.Transcript
 
+  @max_history 100
+
   defstruct height: 24,
             command_handler: nil,
+            history: [],
+            history_draft: "",
+            history_index: nil,
             input: nil,
             notice: nil,
             panel: nil,
@@ -28,6 +33,9 @@ defmodule Tui.TerminalApp.State do
   @type t :: %__MODULE__{
           height: pos_integer(),
           command_handler: Tui.TerminalApp.command_handler() | nil,
+          history: [String.t()],
+          history_draft: String.t(),
+          history_index: non_neg_integer() | nil,
           input: Prompt.t(),
           notice: String.t() | nil,
           panel: :help | :status | nil,
@@ -79,6 +87,31 @@ defmodule Tui.TerminalApp.State do
 
   def reduce(:submit, state) do
     submit_prompt_or_command(state)
+  end
+
+  def reduce(:insert_newline, state) do
+    {%{state | input: Prompt.insert_newline(state.input), history_index: nil}, []}
+  end
+
+  def reduce({:scroll, direction, height}, state) do
+    transcript = Transcript.scroll(state.transcript, direction, state.width, height)
+    {%{state | transcript: transcript}, []}
+  end
+
+  def reduce(:clear_transcript, state) do
+    {%{state | transcript: Transcript.clear(state.transcript)}, []}
+  end
+
+  def reduce({:history_prev, event}, state) do
+    if prompt_cursor_at_top?(state),
+      do: {history_prev(state), []},
+      else: reduce({:input_event, event}, state)
+  end
+
+  def reduce({:history_next, event}, state) do
+    if prompt_cursor_at_bottom?(state),
+      do: {history_next(state), []},
+      else: reduce({:input_event, event}, state)
   end
 
   def reduce({:set_submit_prompt, submit_prompt}, state) when is_function(submit_prompt, 1) do
@@ -157,11 +190,14 @@ defmodule Tui.TerminalApp.State do
   end
 
   def reduce({:input_event, event}, state) do
+    before = Prompt.value(state.input)
     input = Prompt.handle_event(state.input, event)
     prompt = Prompt.value(input)
     selected_command = CommandMenu.clamp_index(state.selected_command, prompt)
+    history_index = if prompt == before, do: state.history_index, else: nil
 
-    {%{state | input: input, selected_command: selected_command}, []}
+    {%{state | input: input, selected_command: selected_command, history_index: history_index},
+     []}
   end
 
   def reduce(:quit, state), do: {state, [:quit]}
@@ -182,6 +218,60 @@ defmodule Tui.TerminalApp.State do
   """
   @spec prompt_width(pos_integer()) :: pos_integer()
   def prompt_width(width), do: max(10, width - 2)
+
+  defp prompt_cursor_at_top?(state) do
+    {row, _col} = Prompt.cursor(state.input)
+    row == 0
+  end
+
+  defp prompt_cursor_at_bottom?(state) do
+    {row, _col} = Prompt.cursor(state.input)
+    row >= Prompt.line_count(state.input) - 1
+  end
+
+  defp history_prev(%{history: []} = state), do: state
+
+  defp history_prev(state) do
+    {draft, index} =
+      case state.history_index do
+        nil -> {Prompt.value(state.input), 0}
+        current -> {state.history_draft, min(current + 1, length(state.history) - 1)}
+      end
+
+    %{
+      state
+      | input: Prompt.set_value(state.input, Enum.at(state.history, index)),
+        history_draft: draft,
+        history_index: index
+    }
+  end
+
+  defp history_next(%{history_index: nil} = state), do: state
+
+  defp history_next(%{history_index: 0} = state) do
+    %{state | input: Prompt.set_value(state.input, state.history_draft), history_index: nil}
+  end
+
+  defp history_next(state) do
+    index = state.history_index - 1
+
+    %{
+      state
+      | input: Prompt.set_value(state.input, Enum.at(state.history, index)),
+        history_index: index
+    }
+  end
+
+  defp record_history(state, prompt) do
+    history =
+      case state.history do
+        [^prompt | _] = existing -> existing
+        existing -> [prompt | existing]
+      end
+      |> Enum.take(@max_history)
+
+    %{state | history: history, history_draft: "", history_index: nil}
+  end
 
   defp submit_prompt_or_command(state) do
     prompt =
@@ -279,6 +369,7 @@ defmodule Tui.TerminalApp.State do
 
   defp submit_prompt(%{submit_prompt: submit_prompt} = state, prompt)
        when is_function(submit_prompt, 1) do
+    state = record_history(state, prompt)
     prompt_ref = make_ref()
     runtime = self()
 

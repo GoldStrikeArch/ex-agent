@@ -22,5 +22,18 @@ defmodule Tui.TerminalApp.PromptTest do
     assert Prompt.value(input) == "hello\nworld"
   end
 
+  test "inserts a newline at the cursor" do
+    input =
+      Prompt.new()
+      |> Prompt.handle_event(key("h"))
+      |> Prompt.handle_event(key("i"))
+      |> Prompt.insert_newline()
+      |> Prompt.handle_event(key("a"))
+
+    assert Prompt.value(input) == "hi\na"
+    assert Prompt.line_count(input) == 2
+    assert {1, 1} = Prompt.cursor(input)
+  end
+
   defp key(code), do: %Event.Key{code: code, kind: "press"}
 end

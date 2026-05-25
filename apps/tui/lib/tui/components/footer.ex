@@ -17,7 +17,7 @@ defmodule Tui.Components.Footer do
     if MapSet.size(pending_prompts) > 0 do
       "running..."
     else
-      "Enter send | /status | /help | Ctrl+C quit"
+      "Enter send | Alt+Enter newline | Up history | PgUp/PgDn scroll | /help | Ctrl+C quit"
     end
   end
 
