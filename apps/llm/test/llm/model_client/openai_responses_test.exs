@@ -1,7 +1,6 @@
 defmodule LLM.ModelClient.OpenAIResponsesTest do
   use ExUnit.Case, async: false
 
-  alias LLM.Auth.Credential
   alias LLM.ModelClient.OpenAIResponses
 
   test "builds a Responses request and streams text deltas" do
@@ -161,46 +160,22 @@ defmodule LLM.ModelClient.OpenAIResponsesTest do
            ] = request.body.input
   end
 
-  test "builds Codex requests from an injected credential" do
-    credential = %Credential{
-      access: "access-token",
-      refresh: "refresh-token",
-      expires_at: System.system_time(:millisecond) + 60_000,
-      account_id: "acct_1"
-    }
-
+  test "public Responses request does not include Codex backend headers or body options" do
     assert {:ok, request} =
              OpenAIResponses.build_request(
                [%{role: :user, content: "hello"}],
                [%{name: "shell", description: "Run shell", schema: %{type: "object"}}],
                model: "gpt-test",
                provider: :openai_codex,
-               credential: credential,
-               instructions: "agent rules"
+               api_key: "sk-test"
              )
 
-    assert request.url == "https://chatgpt.com/backend-api/codex/responses"
-    assert {"authorization", "Bearer access-token"} in request.headers
-    assert {"chatgpt-account-id", "acct_1"} in request.headers
-    assert {"originator", "pi"} in request.headers
-
-    assert %{
-             input: [%{role: "user", content: [%{type: "input_text", text: "hello"}]}],
-             instructions: "agent rules",
-             tools: [
-               %{
-                 type: "function",
-                 name: "shell",
-                 description: "Run shell",
-                 parameters: %{type: "object"},
-                 strict: nil
-               }
-             ],
-             text: %{verbosity: "low"},
-             include: ["reasoning.encrypted_content"],
-             tool_choice: "auto",
-             parallel_tool_calls: true
-           } = request.body
+    assert request.url == "https://api.openai.com/v1/responses"
+    refute Enum.any?(request.headers, fn {key, _value} -> key == "originator" end)
+    refute Enum.any?(request.headers, fn {key, _value} -> key == "chatgpt-account-id" end)
+    refute Map.has_key?(request.body, :text)
+    refute Map.has_key?(request.body, :include)
+    assert [%{strict: false}] = request.body.tools
   end
 
   test "runs the session tool loop with a fake Responses transport" do

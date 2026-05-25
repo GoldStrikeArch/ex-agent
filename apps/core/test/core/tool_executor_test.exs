@@ -49,6 +49,38 @@ defmodule Core.ToolExecutorTest do
     assert result.output == "README.md\nlib/"
   end
 
+  test "list_files limits loaded entries and model-visible output", %{workspace: workspace} do
+    path = Path.join(workspace, "many")
+    File.mkdir_p!(path)
+
+    for name <- ~w(c.txt a.txt e.txt b.txt d.txt f.txt) do
+      File.write!(Path.join(path, name), name)
+    end
+
+    assert {:ok, result} =
+             Core.run_tool(
+               "list_files",
+               %{path: "many", max_entries: 5, max_output_entries: 2},
+               workspace_root: workspace,
+               tool_call_id: "tool-list"
+             )
+
+    assert Enum.map(result.entries, & &1.path) == [
+             "many/a.txt",
+             "many/b.txt",
+             "many/c.txt",
+             "many/d.txt",
+             "many/e.txt"
+           ]
+
+    assert result.total_entries == 6
+    assert result.shown_entries == 2
+    assert result.entries_truncated
+    assert result.output_truncated
+    assert result.output == "many/a.txt\nmany/b.txt"
+    assert result.summary == "2 shown, 5 loaded of 6 entries"
+  end
+
   test "grep returns ripgrep matches", %{workspace: workspace} do
     assert {:ok, result} =
              Core.run_tool("grep", %{pattern: "hello", path: "lib"},
@@ -82,6 +114,8 @@ defmodule Core.ToolExecutorTest do
   test "shell runs inside the workspace and keeps nonzero exits as results", %{
     workspace: workspace
   } do
+    refute Map.has_key?(Core.Tools.Shell.schema().properties.timeout_ms, :default)
+
     assert {:ok, result} =
              Core.run_tool(
                "shell",
@@ -117,6 +151,28 @@ defmodule Core.ToolExecutorTest do
 
     assert result.output == "abc"
     assert result.truncated
+  end
+
+  test "shell honors explicit timeouts", %{workspace: workspace} do
+    assert {:error, {:shell_timeout, 10, ""}} =
+             Core.run_tool(
+               "shell",
+               %{"command" => "sleep 1", "timeout_ms" => 10},
+               workspace_root: workspace,
+               permission_mode: :trusted
+             )
+  end
+
+  test "tool numeric arguments return out-of-range errors instead of clamping", %{
+    workspace: workspace
+  } do
+    assert {:error, {:argument_out_of_range, :max_output_bytes, 5_000_001, 0, 5_000_000}} =
+             Core.run_tool(
+               "shell",
+               %{"command" => "printf abcdef", "max_output_bytes" => 5_000_001},
+               workspace_root: workspace,
+               permission_mode: :trusted
+             )
   end
 
   test "write_file writes inside the workspace and creates directories when requested", %{

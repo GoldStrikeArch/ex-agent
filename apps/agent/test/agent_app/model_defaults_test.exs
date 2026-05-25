@@ -15,7 +15,7 @@ defmodule AgentApp.ModelDefaultsTest do
 
     assert {session_opts, nil} = ModelDefaults.apply_to_session_opts([], agent_dir: agent_dir)
 
-    assert session_opts[:model_client] == LLM.ModelClient.OpenAIResponses
+    assert session_opts[:model_client] == LLM.ModelClient.OpenAICodex
     assert session_opts[:permission_mode] == :trusted
     assert session_opts[:model_opts][:model] == "gpt-5.5"
     assert session_opts[:model_opts][:provider] == :openai_codex

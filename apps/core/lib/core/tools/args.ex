@@ -23,7 +23,7 @@ defmodule Core.Tools.Args do
     value = get(args, key, default)
 
     case parse_integer(value) do
-      {:ok, integer} -> {:ok, integer |> Kernel.max(min) |> Kernel.min(max)}
+      {:ok, integer} -> validate_range(integer, key, min, max)
       :error -> {:error, {:invalid_argument, key, value}}
     end
   end
@@ -35,7 +35,7 @@ defmodule Core.Tools.Args do
 
       value ->
         case parse_integer(value) do
-          {:ok, integer} -> {:ok, integer |> Kernel.max(min) |> Kernel.min(max)}
+          {:ok, integer} -> validate_range(integer, key, min, max)
           :error -> {:error, {:invalid_argument, key, value}}
         end
     end
@@ -60,4 +60,12 @@ defmodule Core.Tools.Args do
   end
 
   defp parse_integer(_value), do: :error
+
+  defp validate_range(integer, _key, min, max) when integer >= min and integer <= max do
+    {:ok, integer}
+  end
+
+  defp validate_range(integer, key, min, max) do
+    {:error, {:argument_out_of_range, key, integer, min, max}}
+  end
 end

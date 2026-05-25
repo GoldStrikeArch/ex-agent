@@ -3,7 +3,7 @@ defmodule AgentApp.Settings do
   File-backed user settings for the runnable agent app.
 
   Settings live in `$ELIXIR_AGENT_DIR/settings.json`, defaulting to
-  `~/.elixir-agent/agent/settings.json`. Model selection uses PI-compatible
+  `~/.elixir-agent/agent/settings.json`. Model selection uses Codex-compatible
   `defaultProvider` and `defaultModel` fields so auth and user preferences stay
   as separate files.
   """

@@ -141,6 +141,81 @@ defmodule CoreTest do
     assert :ok = Core.stop_session(session)
   end
 
+  test "does not cap tool iterations by default" do
+    workspace =
+      Path.join(
+        System.tmp_dir!(),
+        "agent-core-unlimited-tools-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(workspace)
+    File.write!(Path.join(workspace, "mix.exs"), "defmodule ManyTools do\nend\n")
+
+    on_exit(fn -> File.rm_rf(workspace) end)
+
+    script =
+      Enum.map(1..5, fn index ->
+        %{
+          tool_calls: [
+            %{
+              id: "tool-read-#{index}",
+              name: "read_file",
+              args: %{"path" => "mix.exs"}
+            }
+          ]
+        }
+      end)
+
+    assert {:ok, session} =
+             Core.start_session(workspace_root: workspace, model_opts: [script: script])
+
+    assert {:ok, %{content: content}} = Core.send_message(session, "read repeatedly")
+    assert content =~ "Mock response after tool: defmodule ManyTools"
+
+    assert {:ok, messages} = Core.messages(session)
+    assert messages |> Enum.count(&match?(%{role: :tool}, &1)) == 5
+
+    assert :ok = Core.stop_session(session)
+  end
+
+  test "honors an explicit tool iteration cap" do
+    workspace =
+      Path.join(
+        System.tmp_dir!(),
+        "agent-core-capped-tools-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(workspace)
+    File.write!(Path.join(workspace, "mix.exs"), "defmodule CappedTools do\nend\n")
+
+    on_exit(fn -> File.rm_rf(workspace) end)
+
+    script = [
+      %{tool_calls: [%{id: "tool-read-1", name: "read_file", args: %{"path" => "mix.exs"}}]},
+      %{tool_calls: [%{id: "tool-read-2", name: "read_file", args: %{"path" => "mix.exs"}}]}
+    ]
+
+    assert {:ok, session} =
+             Core.start_session(
+               workspace_root: workspace,
+               max_tool_iterations: 1,
+               model_opts: [script: script]
+             )
+
+    assert {:error, {:max_tool_iterations_exceeded, 1}} =
+             Core.send_message(session, "read repeatedly")
+
+    assert {:ok, messages} = Core.messages(session)
+    assert messages |> Enum.count(&match?(%{role: :tool}, &1)) == 1
+
+    assert %{
+             role: :assistant,
+             tool_calls: [%{id: "tool-read-2", name: "read_file", args: %{"path" => "mix.exs"}}]
+           } = List.last(messages)
+
+    assert :ok = Core.stop_session(session)
+  end
+
   test "model client exceptions return errors without stopping the session" do
     assert {:ok, session} = Core.start_session(model_client: CrashingModelClient)
 

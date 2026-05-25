@@ -45,7 +45,7 @@ defmodule AgentApp.InteractiveTest do
     assert :ok = Interactive.setup_model(runtime, session, model_state, agent_dir: agent_dir)
 
     state = :sys.get_state(session)
-    assert state.model_client == LLM.ModelClient.OpenAIResponses
+    assert state.model_client == LLM.ModelClient.OpenAICodex
     assert state.model_opts[:model] == "gpt-5.5"
     assert state.model_opts[:provider] == :openai_codex
     assert state.model_opts[:auth_provider] == :openai_codex

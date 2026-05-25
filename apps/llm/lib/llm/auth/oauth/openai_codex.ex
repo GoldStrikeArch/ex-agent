@@ -50,7 +50,7 @@ defmodule LLM.Auth.OAuth.OpenAICodex do
     pkce = PKCE.generate()
     state = create_state()
     redirect_uri = Keyword.get(opts, :redirect_uri, @redirect_uri)
-    originator = Keyword.get(opts, :originator, "elixir-agent")
+    originator = Keyword.get(opts, :originator, "ex-agent")
 
     url =
       @authorize_url

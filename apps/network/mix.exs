@@ -24,6 +24,8 @@ defmodule Network.MixProject do
 
   defp deps do
     [
+      {:mint, "~> 1.8"},
+      {:mint_web_socket, "~> 1.0"},
       {:req, "~> 0.5.18"},
       {:plug_cowboy, "~> 2.8"}
     ]

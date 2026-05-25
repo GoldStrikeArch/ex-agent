@@ -37,7 +37,7 @@ defmodule Core.AgentSession do
             tools: [],
             workspace_root: nil,
             file_lock_manager: Core.FileLockManager,
-            max_tool_iterations: 4
+            max_tool_iterations: :infinity
 
   @doc """
   Starts an unsupervised session process.
@@ -85,7 +85,7 @@ defmodule Core.AgentSession do
       tools: Keyword.get_lazy(opts, :tools, &Core.ToolRegistry.default_tools/0),
       workspace_root: Keyword.get_lazy(opts, :workspace_root, &File.cwd!/0),
       file_lock_manager: Keyword.get(opts, :file_lock_manager, Core.FileLockManager),
-      max_tool_iterations: Keyword.get(opts, :max_tool_iterations, 4)
+      max_tool_iterations: max_tool_iterations(opts)
     }
 
     publish(Core.Event.session_started(%{session_id: state.session_id}))
@@ -239,28 +239,32 @@ defmodule Core.AgentSession do
   defp continue_after_tool_request(
          messages,
          assistant_message,
-         _tool_calls,
-         state,
-         _context,
-         tool_iterations
-       )
-       when tool_iterations >= state.max_tool_iterations do
-    {:error, {:max_tool_iterations_exceeded, state.max_tool_iterations},
-     messages ++ [assistant_message]}
-  end
-
-  defp continue_after_tool_request(
-         messages,
-         assistant_message,
          tool_calls,
          state,
          context,
          tool_iterations
        ) do
-    tool_messages = run_tool_calls(tool_calls, state)
-    next_messages = messages ++ [assistant_message | tool_messages]
+    if tool_limit_reached?(tool_iterations, state.max_tool_iterations) do
+      {:error, {:max_tool_iterations_exceeded, state.max_tool_iterations},
+       messages ++ [assistant_message]}
+    else
+      tool_messages = run_tool_calls(tool_calls, state)
+      next_messages = messages ++ [assistant_message | tool_messages]
 
-    run_model_loop(next_messages, state, context, tool_iterations + 1, new_message_id())
+      run_model_loop(next_messages, state, context, tool_iterations + 1, new_message_id())
+    end
+  end
+
+  defp tool_limit_reached?(_tool_iterations, :infinity), do: false
+  defp tool_limit_reached?(tool_iterations, max) when is_integer(max), do: tool_iterations >= max
+
+  defp max_tool_iterations(opts) do
+    case Keyword.get(opts, :max_tool_iterations, :infinity) do
+      nil -> :infinity
+      :infinity -> :infinity
+      max when is_integer(max) and max >= 0 -> max
+      max -> raise ArgumentError, "invalid :max_tool_iterations #{inspect(max)}"
+    end
   end
 
   defp run_tool_calls(tool_calls, state) do

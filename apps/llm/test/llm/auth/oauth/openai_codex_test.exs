@@ -26,6 +26,17 @@ defmodule LLM.Auth.OAuth.OpenAICodexTest do
            ) == %{code: "abc123", state: "state456"}
   end
 
+  test "authorization flow uses ex-agent as the default originator" do
+    query =
+      OpenAICodex.authorization_flow()
+      |> Map.fetch!(:url)
+      |> URI.parse()
+      |> Map.fetch!(:query)
+      |> URI.decode_query()
+
+    assert query["originator"] == "ex-agent"
+  end
+
   test "exchanges authorization codes into credentials" do
     parent = self()
     jwt = jwt(%{"https://api.openai.com/auth" => %{"chatgpt_account_id" => "acct_1"}})

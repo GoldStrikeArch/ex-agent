@@ -7,7 +7,6 @@ defmodule Core.Tools.Shell do
 
   alias Core.Tools.Args
 
-  @default_timeout_ms 30_000
   @default_max_output_bytes 64 * 1_024
 
   @impl true
@@ -23,7 +22,7 @@ defmodule Core.Tools.Shell do
       required: ["command"],
       properties: %{
         command: %{type: "string"},
-        timeout_ms: %{type: "integer", default: @default_timeout_ms},
+        timeout_ms: %{type: "integer"},
         max_output_bytes: %{type: "integer", default: @default_max_output_bytes}
       }
     }
@@ -35,7 +34,7 @@ defmodule Core.Tools.Shell do
   @impl true
   def run(args, context) do
     with {:ok, command} <- Args.fetch_string(args, :command),
-         {:ok, timeout_ms} <- Args.integer(args, :timeout_ms, @default_timeout_ms, 1, 600_000),
+         {:ok, timeout_ms} <- Args.optional_integer(args, :timeout_ms, 1, 600_000),
          {:ok, max_bytes} <-
            Args.integer(args, :max_output_bytes, @default_max_output_bytes, 0, 5_000_000),
          {:ok, shell} <- shell_path() do
@@ -53,7 +52,7 @@ defmodule Core.Tools.Shell do
   defp run_command(shell, command, workspace_root, timeout_ms, max_bytes) do
     root = workspace_root |> Path.expand() |> Path.absname()
     port = open_port(shell, command, root)
-    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    deadline = deadline(timeout_ms)
     capture = %{chunks: [], bytes: 0, max_bytes: max_bytes, truncated: false}
 
     case receive_port(port, deadline, timeout_ms, capture) do
@@ -94,6 +93,11 @@ defmodule Core.Tools.Shell do
   defp handle_port_message({:exit_status, exit_status}, _port, _deadline, _timeout_ms, capture) do
     {:ok, exit_status, capture_output(capture), capture.truncated}
   end
+
+  defp deadline(nil), do: nil
+  defp deadline(timeout_ms), do: System.monotonic_time(:millisecond) + timeout_ms
+
+  defp timeout_remaining(nil), do: :infinity
 
   defp timeout_remaining(deadline) do
     max(0, deadline - System.monotonic_time(:millisecond))

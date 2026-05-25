@@ -61,7 +61,7 @@ defmodule AgentApp.CLI do
 
     if flags[:model] do
       opts = [
-        model_client: LLM.ModelClient.OpenAIResponses,
+        model_client: LLM.ModelClient.OpenAICodex,
         model_opts:
           [
             model: flags[:model],

@@ -109,7 +109,7 @@ defmodule AgentApp.ModelCatalog do
       provider: :openai_codex,
       settings_provider: "openai-codex",
       auth_provider: :openai_codex,
-      client: LLM.ModelClient.OpenAIResponses,
+      client: LLM.ModelClient.OpenAICodex,
       credential_resolver: &AgentApp.Auth.resolve_credential/2,
       instructions: String.trim(@default_instructions),
       text_verbosity: "low",
