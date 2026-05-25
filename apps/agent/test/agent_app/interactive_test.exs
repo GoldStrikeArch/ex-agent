@@ -46,15 +46,16 @@ defmodule AgentApp.InteractiveTest do
 
     state = :sys.get_state(session)
     assert state.model_client == LLM.ModelClient.OpenAIResponses
-    assert state.model_opts[:model] == "gpt-5"
+    assert state.model_opts[:model] == "gpt-5.5"
     assert state.model_opts[:provider] == :openai_codex
     assert state.model_opts[:auth_provider] == :openai_codex
     assert is_function(state.model_opts[:credential_resolver], 2)
     assert state.model_opts[:agent_dir] == agent_dir
+    assert is_binary(state.model_opts[:instructions])
     assert state.permission_mode == :trusted
     assert Agent.get(model_state, & &1.configured?)
 
-    assert {:ok, %{provider: "openai_codex", model: "gpt-5"}} =
+    assert {:ok, %{provider: "openai-codex", model: "gpt-5.5"}} =
              Settings.default_model(agent_dir: agent_dir)
   end
 

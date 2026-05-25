@@ -10,10 +10,10 @@ defmodule AgentApp.SettingsTest do
 
     assert :ok = Settings.put_default_model(:openai_codex, "gpt-5", agent_dir: agent_dir)
 
-    assert {:ok, %{"defaultProvider" => "openai_codex", "defaultModel" => "gpt-5"}} =
+    assert {:ok, %{"defaultProvider" => "openai-codex", "defaultModel" => "gpt-5"}} =
              Settings.read(agent_dir: agent_dir)
 
-    assert {:ok, %{provider: "openai_codex", model: "gpt-5"}} =
+    assert {:ok, %{provider: "openai-codex", model: "gpt-5"}} =
              Settings.default_model(agent_dir: agent_dir)
 
     assert {:ok, dir_stat} = File.stat(agent_dir)
@@ -33,7 +33,7 @@ defmodule AgentApp.SettingsTest do
     assert {:ok,
             %{
               "theme" => "plain",
-              "defaultProvider" => "openai_codex",
+              "defaultProvider" => "openai-codex",
               "defaultModel" => "gpt-5"
             }} = Settings.read(agent_dir: agent_dir)
   end

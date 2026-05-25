@@ -53,7 +53,7 @@ defmodule Core.AgentSession do
   @spec send_message(pid(), String.t()) ::
           {:ok, %{message_id: String.t(), content: String.t()}} | {:error, term()}
   def send_message(pid, text) when is_pid(pid) and is_binary(text) do
-    GenServer.call(pid, {:send_message, text})
+    GenServer.call(pid, {:send_message, text}, :infinity)
   end
 
   @doc """
@@ -144,9 +144,18 @@ defmodule Core.AgentSession do
     state.model_client.stream_chat(
       messages,
       Core.ToolRegistry.schemas(state.tools),
-      state.model_opts,
+      Keyword.put_new(state.model_opts, :session_id, state.session_id),
       message_delta_sink(assistant_message_id)
     )
+  rescue
+    exception ->
+      {:error, {:model_client_exception, exception.__struct__, Exception.message(exception)}}
+  catch
+    :exit, reason ->
+      {:error, {:model_client_exit, reason}}
+
+    kind, reason ->
+      {:error, {:model_client_throw, kind, reason}}
   end
 
   defp message_delta_sink(message_id) do

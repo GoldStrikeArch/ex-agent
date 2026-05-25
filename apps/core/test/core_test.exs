@@ -1,6 +1,20 @@
 defmodule CoreTest do
   use ExUnit.Case, async: false
 
+  defmodule CrashingModelClient do
+    @behaviour Core.ModelClient
+
+    @impl true
+    def stream_chat(_messages, _tools, _opts, _event_sink) do
+      raise "provider bug"
+    end
+
+    @impl true
+    def complete_chat(_messages, _tools, _opts) do
+      raise "provider bug"
+    end
+  end
+
   test "starts a session, handles a message, and emits events" do
     :ok = Core.EventBus.subscribe()
 
@@ -123,6 +137,18 @@ defmodule CoreTest do
 
     assert_receive {:core_event, {:turn_finished, ^turn_id, %{status: :ok}}}
     assert_receive {:core_event, {:agent_finished, _session_id}}
+
+    assert :ok = Core.stop_session(session)
+  end
+
+  test "model client exceptions return errors without stopping the session" do
+    assert {:ok, session} = Core.start_session(model_client: CrashingModelClient)
+
+    assert {:error, {:model_client_exception, RuntimeError, "provider bug"}} =
+             Core.send_message(session, "hello")
+
+    assert Process.alive?(session)
+    assert {:ok, [%{role: :user, content: "hello"}]} = Core.messages(session)
 
     assert :ok = Core.stop_session(session)
   end

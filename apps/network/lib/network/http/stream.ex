@@ -12,6 +12,7 @@ defmodule Network.HTTP.Stream do
           optional(:headers) => [{String.t(), String.t()}],
           optional(:body) => term(),
           optional(:json) => term(),
+          optional(:req_opts) => keyword(),
           optional(:timeout_ms) => pos_integer()
         }
 
@@ -74,16 +75,34 @@ defmodule Network.HTTP.Stream do
   end
 
   defp post_request(request, owner, chunk_ref) do
-    Req.post(
+    request
+    |> req_opts(owner, chunk_ref)
+    |> Req.post()
+  end
+
+  defp req_opts(request, owner, chunk_ref) do
+    request
+    |> Map.get(:req_opts, [])
+    |> Keyword.merge(
       url: Map.fetch!(request, :url),
       headers: Map.get(request, :headers, []),
       json: Map.get(request, :json, Map.get(request, :body)),
       receive_timeout: timeout_ms(request),
-      into: fn {:data, data}, acc ->
-        send(owner, {chunk_ref, :chunk, data})
-        {:cont, acc}
-      end
+      into: stream_into(owner, chunk_ref)
     )
+  end
+
+  defp stream_into(owner, chunk_ref) do
+    fn {:data, data}, {req, resp} ->
+      send(owner, {chunk_ref, :chunk, data})
+      {:cont, {req, capture_error_body(resp, data)}}
+    end
+  end
+
+  defp capture_error_body(%{status: status} = resp, _data) when status in 200..299, do: resp
+
+  defp capture_error_body(resp, data) do
+    %{resp | body: IO.iodata_to_binary([resp.body || "", data])}
   end
 
   defp collect(worker, state, on_chunk, on_success, timeout_ms) do

@@ -16,7 +16,7 @@ defmodule AgentApp.ModelDefaults do
   Persists a catalog option as the user's default model.
   """
   @spec persist(ModelCatalog.option(), keyword()) :: :ok | {:error, term()}
-  def persist(%{provider: provider, model: model}, opts \\ []) do
+  def persist(%{settings_provider: provider, model: model}, opts \\ []) do
     Settings.put_default_model(provider, model, opts)
   end
 

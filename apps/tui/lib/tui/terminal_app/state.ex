@@ -251,7 +251,7 @@ defmodule Tui.TerminalApp.State do
 
     with {:ok, _pid} <-
            start_prompt_task(state.task_supervisor, fn ->
-             result = command_handler.(command_id, context)
+             result = invoke_callback(command_handler, [command_id, context])
              send(runtime, {:command_result, command_ref, result})
            end) do
       state
@@ -284,7 +284,7 @@ defmodule Tui.TerminalApp.State do
 
     with {:ok, _pid} <-
            start_prompt_task(state.task_supervisor, fn ->
-             result = submit_prompt.(prompt)
+             result = invoke_callback(submit_prompt, [prompt])
              send(runtime, {:prompt_result, prompt_ref, result})
            end) do
       start_pending_prompt(state, prompt_ref)
@@ -372,6 +372,19 @@ defmodule Tui.TerminalApp.State do
   defp resolve_supervisor({name, node} = server) when is_atom(name) and is_atom(node), do: server
   defp resolve_supervisor({:global, _name} = server), do: server
   defp resolve_supervisor({:via, module, _name} = server) when is_atom(module), do: server
+
+  defp invoke_callback(callback, args) do
+    apply(callback, args)
+  rescue
+    exception ->
+      {:error, {:callback_exception, exception.__struct__, Exception.message(exception)}}
+  catch
+    :exit, reason ->
+      {:error, {:callback_exit, reason}}
+
+    kind, reason ->
+      {:error, {:callback_throw, kind, reason}}
+  end
 
   @spec positive_integer_or(term(), pos_integer()) :: pos_integer()
   defp positive_integer_or(value, _fallback) when is_integer(value) and value > 0, do: value

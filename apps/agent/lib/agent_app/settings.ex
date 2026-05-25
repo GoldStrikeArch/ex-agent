@@ -141,6 +141,7 @@ defmodule AgentApp.Settings do
     end
   end
 
+  defp provider_key(:openai_codex), do: "openai-codex"
   defp provider_key(provider) when is_atom(provider), do: Atom.to_string(provider)
   defp provider_key(provider) when is_binary(provider), do: provider
 end

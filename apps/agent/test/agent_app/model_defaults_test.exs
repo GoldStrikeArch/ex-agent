@@ -4,6 +4,7 @@ defmodule AgentApp.ModelDefaultsTest do
   alias AgentApp.Auth.Storage
   alias AgentApp.ModelCatalog
   alias AgentApp.ModelDefaults
+  alias AgentApp.Settings
   alias LLM.Auth.Credential
 
   test "persists and restores the default model into unconfigured session options" do
@@ -16,10 +17,11 @@ defmodule AgentApp.ModelDefaultsTest do
 
     assert session_opts[:model_client] == LLM.ModelClient.OpenAIResponses
     assert session_opts[:permission_mode] == :trusted
-    assert session_opts[:model_opts][:model] == "gpt-5"
+    assert session_opts[:model_opts][:model] == "gpt-5.5"
     assert session_opts[:model_opts][:provider] == :openai_codex
     assert session_opts[:model_opts][:auth_provider] == :openai_codex
     assert session_opts[:model_opts][:agent_dir] == agent_dir
+    assert is_binary(session_opts[:model_opts][:instructions])
   end
 
   test "does not override explicitly configured session options" do
@@ -39,6 +41,16 @@ defmodule AgentApp.ModelDefaultsTest do
 
     assert {[], notice} = ModelDefaults.apply_to_session_opts([], agent_dir: agent_dir)
     assert notice == "saved model requires openai_codex credentials; run /model to authenticate"
+  end
+
+  test "restores legacy Codex gpt-5 settings to the current default model" do
+    agent_dir = tmp_dir()
+
+    assert :ok = Storage.write(:openai_codex, credential(), agent_dir: agent_dir)
+    assert :ok = Settings.put_default_model(:openai_codex, "gpt-5", agent_dir: agent_dir)
+
+    assert {session_opts, nil} = ModelDefaults.apply_to_session_opts([], agent_dir: agent_dir)
+    assert session_opts[:model_opts][:model] == "gpt-5.5"
   end
 
   defp credential do

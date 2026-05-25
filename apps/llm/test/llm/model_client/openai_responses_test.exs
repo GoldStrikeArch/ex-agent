@@ -35,7 +35,7 @@ defmodule LLM.ModelClient.OpenAIResponsesTest do
              model: "gpt-test",
              stream: true,
              store: false,
-             input: [%{role: "user", content: "say hello"}],
+             input: [%{role: "user", content: [%{type: "input_text", text: "say hello"}]}],
              tools: [
                %{
                  type: "function",
@@ -46,6 +46,38 @@ defmodule LLM.ModelClient.OpenAIResponsesTest do
                }
              ]
            } = request.body
+  end
+
+  test "streams HTTP SSE responses with an empty final response body" do
+    {:ok, _apps} = Application.ensure_all_started(:network)
+
+    plug = fn conn ->
+      body =
+        [
+          "data: ",
+          JSON.encode!(%{"type" => "response.output_text.delta", "delta" => "hello"}),
+          "\n\n",
+          "data: ",
+          JSON.encode!(%{
+            "type" => "response.completed",
+            "response" => %{"status" => "completed"}
+          }),
+          "\n\n"
+        ]
+        |> IO.iodata_to_binary()
+
+      conn
+      |> Plug.Conn.put_resp_content_type("text/event-stream")
+      |> Plug.Conn.send_resp(200, body)
+    end
+
+    assert {:ok, "hello"} =
+             OpenAIResponses.stream_chat(
+               [%{role: :user, content: "say hello"}],
+               [],
+               [model: "gpt-test", api_key: "sk-test", req_opts: [plug: plug]],
+               fn _delta -> :ok end
+             )
   end
 
   test "maps streamed function calls into internal tool calls" do
@@ -123,7 +155,7 @@ defmodule LLM.ModelClient.OpenAIResponsesTest do
              )
 
     assert [
-             %{role: "user", content: "read"},
+             %{role: "user", content: [%{type: "input_text", text: "read"}]},
              %{type: "function_call", id: "fc_1", call_id: "call_1", name: "read_file"},
              %{type: "function_call_output", call_id: "call_1", output: "file contents"}
            ] = request.body.input
@@ -140,15 +172,35 @@ defmodule LLM.ModelClient.OpenAIResponsesTest do
     assert {:ok, request} =
              OpenAIResponses.build_request(
                [%{role: :user, content: "hello"}],
-               [],
+               [%{name: "shell", description: "Run shell", schema: %{type: "object"}}],
                model: "gpt-test",
                provider: :openai_codex,
-               credential: credential
+               credential: credential,
+               instructions: "agent rules"
              )
 
     assert request.url == "https://chatgpt.com/backend-api/codex/responses"
     assert {"authorization", "Bearer access-token"} in request.headers
     assert {"chatgpt-account-id", "acct_1"} in request.headers
+    assert {"originator", "pi"} in request.headers
+
+    assert %{
+             input: [%{role: "user", content: [%{type: "input_text", text: "hello"}]}],
+             instructions: "agent rules",
+             tools: [
+               %{
+                 type: "function",
+                 name: "shell",
+                 description: "Run shell",
+                 parameters: %{type: "object"},
+                 strict: nil
+               }
+             ],
+             text: %{verbosity: "low"},
+             include: ["reasoning.encrypted_content"],
+             tool_choice: "auto",
+             parallel_tool_calls: true
+           } = request.body
   end
 
   test "runs the session tool loop with a fake Responses transport" do

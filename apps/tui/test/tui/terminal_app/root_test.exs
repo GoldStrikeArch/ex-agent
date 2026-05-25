@@ -60,6 +60,47 @@ defmodule Tui.TerminalApp.RootTest do
     assert_receive {:command_result, _ref, :ok}
   end
 
+  test "reports prompt callback exits without crashing the task" do
+    state =
+      Root.new(subscribe: false)
+      |> Map.put(:submit_prompt, fn _prompt -> exit(:timeout) end)
+      |> Map.update!(:input, &Prompt.set_value(&1, "hello"))
+
+    {state, []} = Root.reduce(:submit, state)
+
+    assert MapSet.size(state.pending_prompts) == 1
+    assert_receive {:prompt_result, prompt_ref, {:error, {:callback_exit, :timeout}}}
+
+    {state, []} =
+      Root.reduce({:prompt_result, prompt_ref, {:error, {:callback_exit, :timeout}}}, state)
+
+    assert state.notice == "prompt failed: {:callback_exit, :timeout}"
+    assert MapSet.size(state.pending_prompts) == 0
+  end
+
+  test "reports command callback exceptions without crashing the task" do
+    state =
+      Root.new(subscribe: false)
+      |> Map.put(:command_handler, fn _command_id, _context -> raise "boom" end)
+      |> Map.update!(:input, &Prompt.set_value(&1, "/model"))
+
+    {state, []} = Root.reduce(:submit, state)
+
+    assert MapSet.size(state.pending_prompts) == 1
+
+    assert_receive {:command_result, command_ref,
+                    {:error, {:callback_exception, RuntimeError, "boom"}}}
+
+    {state, []} =
+      Root.reduce(
+        {:command_result, command_ref, {:error, {:callback_exception, RuntimeError, "boom"}}},
+        state
+      )
+
+    assert state.notice == "command failed: {:callback_exception, RuntimeError, \"boom\"}"
+    assert MapSet.size(state.pending_prompts) == 0
+  end
+
   test "appends app notices to transcript" do
     state = Root.new(subscribe: false)
 

@@ -14,6 +14,8 @@ defmodule LLM.ModelClient.OpenAIResponses do
   @openai_base_url "https://api.openai.com/v1"
   @codex_base_url "https://chatgpt.com/backend-api"
   @timeout_ms 120_000
+  @codex_originator "pi"
+  @codex_user_agent "pi (elixir-agent)"
 
   @impl true
   def stream_chat(messages, tools, opts, event_sink) when is_function(event_sink, 1) do
@@ -42,6 +44,7 @@ defmodule LLM.ModelClient.OpenAIResponses do
          url: endpoint(provider, Keyword.get(opts, :base_url)),
          headers: headers(provider, auth, opts),
          body: body(model, messages, tools, opts),
+         req_opts: Keyword.get(opts, :req_opts, []),
          timeout_ms: Keyword.get(opts, :timeout_ms, @timeout_ms)
        }}
     end
@@ -66,8 +69,9 @@ defmodule LLM.ModelClient.OpenAIResponses do
   end
 
   defp finish_stream_body(body, state, event_sink) do
-    state
-    |> parse_chunk(to_string(body), event_sink)
+    body
+    |> to_string()
+    |> parse_chunk(state, event_sink)
     |> flush_buffer(event_sink)
     |> finish_stream_state()
   end
@@ -167,8 +171,8 @@ defmodule LLM.ModelClient.OpenAIResponses do
     [
       {"authorization", "Bearer " <> auth.token},
       {"chatgpt-account-id", auth.account_id},
-      {"originator", "elixir-agent"},
-      {"user-agent", "elixir-agent"},
+      {"originator", @codex_originator},
+      {"user-agent", @codex_user_agent},
       {"openai-beta", "responses=experimental"},
       {"accept", "text/event-stream"},
       {"content-type", "application/json"}
@@ -195,16 +199,17 @@ defmodule LLM.ModelClient.OpenAIResponses do
       input: Enum.flat_map(Enum.with_index(messages), &message_to_input/1)
     }
     |> maybe_put(:instructions, Keyword.get(opts, :instructions))
-    |> maybe_put(:tools, tool_schemas(tools))
+    |> maybe_put(:tools, tool_schemas(tools, opts))
     |> maybe_put(:reasoning, reasoning(opts))
+    |> maybe_put_codex_options(opts)
   end
 
   defp message_to_input({%{role: :user, content: content}, _index}) do
-    [%{role: "user", content: content}]
+    [%{role: "user", content: [%{type: "input_text", text: content}]}]
   end
 
   defp message_to_input({%{role: :system, content: content}, _index}) do
-    [%{role: "system", content: content}]
+    [%{role: "system", content: [%{type: "input_text", text: content}]}]
   end
 
   defp message_to_input({%{role: :assistant, tool_calls: tool_calls} = message, index}) do
@@ -254,24 +259,58 @@ defmodule LLM.ModelClient.OpenAIResponses do
     }
   end
 
-  defp tool_schemas([]), do: nil
+  defp tool_schemas([], _opts), do: nil
 
-  defp tool_schemas(tools) do
+  defp tool_schemas(tools, opts) do
+    strict = tool_strict(opts)
+
     Enum.map(tools, fn tool ->
       %{
         type: "function",
         name: tool.name,
         description: tool.description,
         parameters: tool.schema,
-        strict: false
+        strict: strict
       }
     end)
+  end
+
+  defp tool_strict(opts) do
+    if codex_opts?(opts), do: nil, else: false
   end
 
   defp reasoning(opts) do
     case Keyword.get(opts, :reasoning_effort) do
       effort when is_binary(effort) and effort != "" -> %{effort: effort}
       _effort -> nil
+    end
+  end
+
+  defp maybe_put_codex_options(body, opts) do
+    if codex_opts?(opts) do
+      body
+      |> Map.put(:text, %{verbosity: Keyword.get(opts, :text_verbosity, "low")})
+      |> Map.put(:include, ["reasoning.encrypted_content"])
+      |> Map.put(:tool_choice, "auto")
+      |> Map.put(:parallel_tool_calls, true)
+      |> maybe_put(:prompt_cache_key, prompt_cache_key(opts))
+    else
+      body
+    end
+  end
+
+  defp codex_opts?(opts) do
+    Keyword.get(opts, :provider) == :openai_codex or
+      Keyword.get(opts, :auth_provider) == :openai_codex
+  end
+
+  defp prompt_cache_key(opts) do
+    case Keyword.get(opts, :session_id) do
+      session_id when is_binary(session_id) and session_id != "" ->
+        String.slice(session_id, 0, 64)
+
+      _session_id ->
+        nil
     end
   end
 
