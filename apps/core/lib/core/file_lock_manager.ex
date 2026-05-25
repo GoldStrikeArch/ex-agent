@@ -1,14 +1,18 @@
 defmodule Core.FileLockManager do
   @moduledoc """
-  Tracks coarse file locks for future write coordination.
+  Tracks coarse file locks for write coordination.
 
-  The first skeleton exposes non-blocking acquire/release primitives. Later edit
-  tooling can replace this with queued locks while keeping the public contract.
+  The GenServer-backed functions coordinate locks inside the current VM. The
+  lock-file helper coordinates durable files across separate OS processes.
   """
 
   use GenServer
 
   defstruct locks: %{}
+
+  @default_lock_stale_after_ms 30_000
+  @default_lock_retry_sleep_ms 10
+  @default_lock_retry_count 100
 
   @doc """
   Starts the file lock manager.
@@ -48,6 +52,30 @@ defmodule Core.FileLockManager do
         {:ok, fun.()}
       after
         release(path, manager)
+      end
+    end
+  end
+
+  @doc """
+  Runs `fun` while holding a sibling lock file.
+
+  Unlike the GenServer-backed `with_lock/3`, this lock coordinates separate OS
+  processes by creating `path <> ".lock"` with exclusive file creation. Stale
+  lock files are removed after the configured stale timeout.
+  """
+  @spec with_lock_file(Path.t(), (-> result), keyword()) :: {:ok, result} | {:error, term()}
+        when result: term()
+  def with_lock_file(path, fun, opts \\ [])
+      when is_binary(path) and is_function(fun, 0) and is_list(opts) do
+    lock_path = Keyword.get(opts, :lock_path, path <> ".lock")
+
+    with :ok <- prepare_lock_dir(lock_path),
+         {:ok, io} <- acquire_file_lock(lock_path, retry_count(opts), opts) do
+      try do
+        {:ok, fun.()}
+      after
+        File.close(io)
+        File.rm(lock_path)
       end
     end
   end
@@ -97,4 +125,45 @@ defmodule Core.FileLockManager do
     |> Path.expand()
     |> Path.absname()
   end
+
+  defp prepare_lock_dir(lock_path) do
+    case File.mkdir_p(Path.dirname(lock_path)) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:file_lock_failed, lock_path, reason}}
+    end
+  end
+
+  defp acquire_file_lock(lock_path, attempts_left, opts) when attempts_left > 0 do
+    case File.open(lock_path, [:write, :exclusive]) do
+      {:ok, io} ->
+        IO.write(io, "#{inspect(self())}\n")
+        {:ok, io}
+
+      {:error, :eexist} ->
+        remove_stale_file_lock(lock_path, stale_after_ms(opts))
+        Process.sleep(retry_sleep_ms(opts))
+        acquire_file_lock(lock_path, attempts_left - 1, opts)
+
+      {:error, reason} ->
+        {:error, {:file_lock_failed, lock_path, reason}}
+    end
+  end
+
+  defp acquire_file_lock(lock_path, _attempts_left, _opts),
+    do: {:error, {:file_lock_timeout, lock_path}}
+
+  defp remove_stale_file_lock(lock_path, stale_after_ms) do
+    case File.stat(lock_path, time: :posix) do
+      {:ok, %{mtime: mtime}} ->
+        lock_age_ms = System.system_time(:millisecond) - mtime * 1000
+        if lock_age_ms > stale_after_ms, do: File.rm(lock_path), else: :ok
+
+      {:error, _reason} ->
+        :ok
+    end
+  end
+
+  defp retry_count(opts), do: Keyword.get(opts, :retry_count, @default_lock_retry_count)
+  defp retry_sleep_ms(opts), do: Keyword.get(opts, :retry_sleep_ms, @default_lock_retry_sleep_ms)
+  defp stale_after_ms(opts), do: Keyword.get(opts, :stale_after_ms, @default_lock_stale_after_ms)
 end

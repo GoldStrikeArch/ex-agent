@@ -7,11 +7,8 @@ defmodule AgentApp.Auth.Storage do
   to avoid concurrent refresh races.
   """
 
+  alias Core.FileLockManager
   alias LLM.Auth.Credential
-
-  @lock_stale_after_ms 30_000
-  @lock_retry_sleep_ms 10
-  @lock_retry_count 100
 
   @doc """
   Reads a provider credential.
@@ -31,13 +28,12 @@ defmodule AgentApp.Auth.Storage do
   """
   @spec write(atom(), Credential.t(), keyword()) :: :ok | {:error, term()}
   def write(provider, %Credential{} = credential, opts \\ []) when is_atom(provider) do
-    with_lock(opts, fn ->
-      with {:ok, records} <- writable_records(opts) do
-        records
-        |> Map.put(provider_key(provider), Credential.to_map(credential))
-        |> write_all(opts)
-      end
-    end)
+    with {:ok, result} <-
+           FileLockManager.with_lock_file(path(opts), fn ->
+             write_locked(provider, credential, opts)
+           end) do
+      result
+    end
   end
 
   @doc """
@@ -71,6 +67,14 @@ defmodule AgentApp.Auth.Storage do
       {:ok, records} -> {:ok, records}
       {:error, {:missing_auth_file, _path}} -> {:ok, %{}}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp write_locked(provider, credential, opts) do
+    with {:ok, records} <- writable_records(opts) do
+      records
+      |> Map.put(provider_key(provider), Credential.to_map(credential))
+      |> write_all(opts)
     end
   end
 
@@ -121,53 +125,6 @@ defmodule AgentApp.Auth.Storage do
   defp replace_auth_file(tmp_path, path) do
     with :ok <- File.rename(tmp_path, path) do
       chmod(path, 0o600)
-    end
-  end
-
-  defp with_lock(opts, fun) when is_function(fun, 0) do
-    lock_path = path(opts) <> ".lock"
-    File.mkdir_p!(Path.dirname(lock_path))
-
-    case acquire_lock(lock_path, @lock_retry_count) do
-      {:ok, io} ->
-        try do
-          fun.()
-        after
-          File.close(io)
-          File.rm(lock_path)
-        end
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp acquire_lock(lock_path, attempts_left) when attempts_left > 0 do
-    case File.open(lock_path, [:write, :exclusive]) do
-      {:ok, io} ->
-        IO.write(io, "#{inspect(self())}\n")
-        {:ok, io}
-
-      {:error, :eexist} ->
-        remove_stale_lock(lock_path)
-        Process.sleep(@lock_retry_sleep_ms)
-        acquire_lock(lock_path, attempts_left - 1)
-
-      {:error, reason} ->
-        {:error, {:auth_lock_failed, lock_path, reason}}
-    end
-  end
-
-  defp acquire_lock(lock_path, 0), do: {:error, {:auth_lock_timeout, lock_path}}
-
-  defp remove_stale_lock(lock_path) do
-    case File.stat(lock_path, time: :posix) do
-      {:ok, %{mtime: mtime}} ->
-        age_ms = System.system_time(:millisecond) - mtime * 1000
-        if age_ms > @lock_stale_after_ms, do: File.rm(lock_path), else: :ok
-
-      {:error, _reason} ->
-        :ok
     end
   end
 

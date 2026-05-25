@@ -7,6 +7,7 @@ defmodule AgentApp.Interactive do
   """
 
   alias AgentApp.EventBridge
+  alias AgentApp.ModelDefaults
   alias AgentApp.ModelCatalog
   alias Tui.TerminalApp
 
@@ -54,6 +55,9 @@ defmodule AgentApp.Interactive do
   end
 
   defp start_session_and_wait(runtime, bridge, session_opts, initial_prompt, auth_opts) do
+    {session_opts, restore_notice} = ModelDefaults.apply_to_session_opts(session_opts, auth_opts)
+    maybe_append_notice(runtime, restore_notice)
+
     session_opts = default_unconfigured_session_opts(session_opts)
 
     session_opts
@@ -126,6 +130,12 @@ defmodule AgentApp.Interactive do
     TerminalApp.submit_initial(runtime, prompt)
   end
 
+  defp maybe_append_notice(_runtime, nil), do: :ok
+
+  defp maybe_append_notice(runtime, notice) when is_binary(notice) do
+    TerminalApp.append_notice(runtime, notice)
+  end
+
   @doc """
   Handles slash commands delegated from the terminal UI.
 
@@ -151,15 +161,16 @@ defmodule AgentApp.Interactive do
   @doc """
   Resolves credentials and configures the current session for the catalog model.
 
-  The function appends auth instructions, setup success, or setup failure
-  notices to the terminal runtime as side effects.
+  The selected model is persisted as the user default. The function appends auth
+  instructions, setup success, persistence warnings, or setup failure notices to
+  the terminal runtime as side effects.
   """
   @spec setup_model(GenServer.server(), pid(), pid(), keyword()) :: :ok | {:error, term()}
   def setup_model(runtime, session, model_state, auth_opts) do
     option = ModelCatalog.default()
 
     with {:ok, _credential} <- resolve_or_login(option, runtime, auth_opts) do
-      configure_model(option, runtime, session, model_state)
+      configure_model(option, runtime, session, model_state, auth_opts)
     else
       {:error, reason} = error ->
         TerminalApp.append_notice(runtime, model_setup_failed_notice(reason))
@@ -218,10 +229,24 @@ defmodule AgentApp.Interactive do
     }
   end
 
-  defp configure_model(option, runtime, session, model_state) do
-    with :ok <- Core.configure_model(session, ModelCatalog.core_opts(option)) do
+  defp configure_model(option, runtime, session, model_state, auth_opts) do
+    with :ok <- Core.configure_model(session, ModelCatalog.core_opts(option, auth_opts)) do
       Agent.update(model_state, fn state -> %{state | configured?: true} end)
+      persist_model_selection(option, runtime, auth_opts)
       TerminalApp.append_notice(runtime, "model configured: #{option.label} (#{option.model})")
+    end
+  end
+
+  defp persist_model_selection(option, runtime, auth_opts) do
+    case ModelDefaults.persist(option, auth_opts) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        TerminalApp.append_notice(
+          runtime,
+          "model configured for this session, but saving preference failed: #{inspect(reason)}"
+        )
     end
   end
 

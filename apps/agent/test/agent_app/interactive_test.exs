@@ -3,6 +3,7 @@ defmodule AgentApp.InteractiveTest do
 
   alias AgentApp.Auth.Storage
   alias AgentApp.Interactive
+  alias AgentApp.Settings
   alias LLM.Auth.Credential
   alias Tui.TerminalApp
 
@@ -49,11 +50,16 @@ defmodule AgentApp.InteractiveTest do
     assert state.model_opts[:provider] == :openai_codex
     assert state.model_opts[:auth_provider] == :openai_codex
     assert is_function(state.model_opts[:credential_resolver], 2)
+    assert state.model_opts[:agent_dir] == agent_dir
     assert state.permission_mode == :trusted
     assert Agent.get(model_state, & &1.configured?)
+
+    assert {:ok, %{provider: "openai_codex", model: "gpt-5"}} =
+             Settings.default_model(agent_dir: agent_dir)
   end
 
   test "model command logs auth instructions when credentials are missing" do
+    agent_dir = tmp_dir()
     parent = self()
 
     resolver = fn :openai_codex, _opts ->
@@ -78,6 +84,7 @@ defmodule AgentApp.InteractiveTest do
 
     assert :ok =
              Interactive.setup_model(runtime, session, model_state,
+               agent_dir: agent_dir,
                credential_resolver: resolver,
                login: login
              )
