@@ -4,6 +4,8 @@ defmodule Tui.TerminalApp.RootTest do
   alias Tui.TerminalApp.Prompt
   alias Tui.TerminalApp.Root
   alias ExRatatui.Event
+  alias ExRatatui.Frame
+  alias ExRatatui.Widgets.Scrollbar
 
   test "opens and executes the status command from slash input" do
     state = Root.new(subscribe: false)
@@ -179,6 +181,62 @@ defmodule Tui.TerminalApp.RootTest do
 
     {state, []} = Root.reduce(:clear_transcript, state)
     assert Tui.TerminalApp.Transcript.visible_lines(state.transcript, 80, 4) == []
+  end
+
+  test "maps mouse wheel events to line scrolling" do
+    state = Root.new(subscribe: false)
+
+    assert {:msg, {:scroll, {:lines, -3}, _height}} =
+             Root.event_to_msg(%Event.Mouse{kind: "scroll_up"}, state)
+
+    assert {:msg, {:scroll, {:lines, 3}, _height}} =
+             Root.event_to_msg(%Event.Mouse{kind: "scroll_down"}, state)
+  end
+
+  test "places the scrollbar thumb at the bottom while following and at the top when scrolled up" do
+    width = 100
+    height = 40
+
+    big = Enum.map_join(1..60, "\n", fn n -> "line #{n}" end)
+
+    state =
+      [
+        {:assistant_message_started, "m1"},
+        {:assistant_delta, "m1", big},
+        {:assistant_message_finished, "m1"}
+      ]
+      |> Enum.reduce(Root.new(subscribe: false, width: width, height: height), fn event, acc ->
+        {acc, []} = Root.reduce({:agent_event, event}, acc)
+        acc
+      end)
+
+    # following: the thumb is pinned to the bottom (position == content_length)
+    assert state.transcript.follow?
+    following = scrollbar(state, width, height)
+    assert following.position == following.content_length
+    assert following.content_length > 0
+    # the scrollbar is driven by the scrollable range, not the total line count
+    refute following.viewport_content_length
+
+    # scrolled to the top: the thumb is at the top (position 0)
+    {top, []} = Root.reduce({:scroll, :top, transcript_height(state)}, state)
+    assert scrollbar(top, width, height).position == 0
+  end
+
+  defp scrollbar(state, width, height) do
+    state
+    |> Root.scene(%Frame{width: width, height: height})
+    |> Enum.find_value(fn
+      {%Scrollbar{} = bar, _rect} -> bar
+      _ -> nil
+    end)
+  end
+
+  defp transcript_height(state) do
+    {:msg, {:scroll, _dir, height}} =
+      Root.event_to_msg(%Event.Key{code: "page_up", kind: "press"}, state)
+
+    height
   end
 
   defp submit_text(state, text) do

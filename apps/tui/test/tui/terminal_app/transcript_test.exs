@@ -100,4 +100,53 @@ defmodule Tui.TerminalApp.TranscriptTest do
     assert bottom.follow?
     assert List.last(Transcript.visible_lines(bottom, 80, 3)) == "user> line 11"
   end
+
+  test "keeps the anchored view fixed when older blocks evict off the top" do
+    transcript =
+      Enum.reduce(1..5, Transcript.new(max_blocks: 5), fn n, acc ->
+        Transcript.append_event(acc, {:user_message, "line #{n}"})
+      end)
+
+    # scroll up one line: viewport now starts at line 3
+    scrolled = Transcript.scroll(transcript, {:lines, -1}, 80, 2)
+    refute scrolled.follow?
+    assert Transcript.visible_lines(scrolled, 80, 2) == ["user> line 3", "user> line 4"]
+
+    # a new block evicts "line 1"; an absolute-index anchor would drift, the
+    # block-identity anchor keeps line 3 pinned to the top
+    scrolled = Transcript.append_event(scrolled, {:user_message, "line 6"})
+    assert Transcript.visible_lines(scrolled, 80, 2) == ["user> line 3", "user> line 4"]
+  end
+
+  test "scrolls by individual lines" do
+    transcript =
+      Enum.reduce(1..6, Transcript.new(), fn n, acc ->
+        Transcript.append_event(acc, {:user_message, "line #{n}"})
+      end)
+
+    up_two =
+      transcript
+      |> Transcript.scroll({:lines, -1}, 80, 2)
+      |> Transcript.scroll({:lines, -1}, 80, 2)
+
+    assert Transcript.visible_lines(up_two, 80, 2) == ["user> line 3", "user> line 4"]
+
+    back_down = Transcript.scroll(up_two, {:lines, 1}, 80, 2)
+    assert Transcript.visible_lines(back_down, 80, 2) == ["user> line 4", "user> line 5"]
+  end
+
+  test "reports viewport metrics for the scroll indicator" do
+    transcript =
+      Enum.reduce(1..10, Transcript.new(), fn n, acc ->
+        Transcript.append_event(acc, {:user_message, "line #{n}"})
+      end)
+
+    assert %{content_length: 10, position: 7, viewport: 3} =
+             Transcript.viewport_metrics(transcript, 80, 3)
+
+    scrolled = Transcript.scroll(transcript, :top, 80, 3)
+
+    assert %{content_length: 10, position: 0, viewport: 3} =
+             Transcript.viewport_metrics(scrolled, 80, 3)
+  end
 end

@@ -26,4 +26,14 @@ defmodule Tui.Components.Transcript do
     |> lines(width, height)
     |> Text.paragraph(%Style{})
   end
+
+  @doc """
+  Returns scroll metrics (content length, position, viewport) for the indicator.
+  """
+  @spec viewport_metrics(Transcript.t(), pos_integer(), pos_integer()) :: %{
+          content_length: non_neg_integer(),
+          position: non_neg_integer(),
+          viewport: pos_integer()
+        }
+  defdelegate viewport_metrics(transcript, width, height), to: Transcript
 end

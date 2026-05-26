@@ -14,6 +14,7 @@ defmodule Tui.TerminalApp.Root do
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Style
   alias ExRatatui.Widgets.Paragraph
+  alias ExRatatui.Widgets.Scrollbar
   alias Tui.Components.CommandPalette
   alias Tui.Components.Footer
   alias Tui.Components.Panel
@@ -25,6 +26,9 @@ defmodule Tui.TerminalApp.Root do
   alias Tui.TerminalApp.State
 
   @type t :: State.t()
+
+  # Lines scrolled per mouse-wheel notch.
+  @mouse_scroll_step 3
 
   @doc """
   Builds the initial root state.
@@ -78,6 +82,14 @@ defmodule Tui.TerminalApp.Root do
   def event_to_msg(%Event.Key{code: code} = _event, state)
       when code in ~w(page_up page_down home end) do
     {:msg, {:scroll, scroll_direction(code), transcript_height(state)}}
+  end
+
+  def event_to_msg(%Event.Mouse{kind: "scroll_up"}, state) do
+    {:msg, {:scroll, {:lines, -@mouse_scroll_step}, transcript_height(state)}}
+  end
+
+  def event_to_msg(%Event.Mouse{kind: "scroll_down"}, state) do
+    {:msg, {:scroll, {:lines, @mouse_scroll_step}, transcript_height(state)}}
   end
 
   def event_to_msg(%Event.Key{code: "up"} = event, state) do
@@ -134,6 +146,7 @@ defmodule Tui.TerminalApp.Root do
       Transcript.render(state.transcript, layout.transcript.width, layout.transcript.height),
       layout.transcript
     )
+    |> add_scrollbar(state.transcript, layout.transcript)
     |> add_line(Text.divider(width), layout.bottom_divider, %Style{fg: :dark_gray})
     |> add_widget(Panel.render(state.panel, state.status, width), layout.panel)
     |> add_widget(command_palette(state, width), layout.commands)
@@ -223,6 +236,31 @@ defmodule Tui.TerminalApp.Root do
     |> Prompt.value()
     |> CommandPalette.lines(state.selected_command, width)
   end
+
+  defp add_scrollbar(widgets, transcript, %Rect{} = rect)
+       when rect.width > 1 and rect.height > 0 do
+    metrics = Transcript.viewport_metrics(transcript, rect.width, rect.height)
+    # ratatui normalizes the thumb by `position / content_length` and uses
+    # `viewport_content_length` only for thumb size, so drive the bar with the
+    # scrollable range (total - viewport). That maps a top position of 0 to the
+    # track top and the bottom position to the track bottom.
+    scrollable = metrics.content_length - metrics.viewport
+
+    if scrollable > 0 do
+      scrollbar = %Scrollbar{
+        orientation: :vertical_right,
+        content_length: scrollable,
+        position: min(metrics.position, scrollable)
+      }
+
+      bar_rect = %Rect{x: rect.x + rect.width - 1, y: rect.y, width: 1, height: rect.height}
+      add_widget(widgets, scrollbar, bar_rect)
+    else
+      widgets
+    end
+  end
+
+  defp add_scrollbar(widgets, _transcript, _rect), do: widgets
 
   defp add_line(widgets, line, rect, style) do
     add_widget(widgets, Text.paragraph([Text.fit_line(line, rect.width)], style), rect)

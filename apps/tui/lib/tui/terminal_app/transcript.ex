@@ -12,10 +12,10 @@ defmodule Tui.TerminalApp.Transcript do
   defstruct active_messages: %{},
             active_permissions: MapSet.new(),
             active_tools: %{},
+            anchor: nil,
             blocks: [],
             follow?: true,
-            max_blocks: 250,
-            top: 0
+            max_blocks: 250
 
   @type tool_state :: %{
           name: String.t(),
@@ -23,17 +23,24 @@ defmodule Tui.TerminalApp.Transcript do
           output_bytes: non_neg_integer()
         }
 
+  @typedoc """
+  A stable scroll anchor: the block whose `line`-th wrapped line sits at the top
+  of the viewport. Anchoring on block identity (rather than an absolute line
+  index) keeps the view fixed while blocks stream above it or evict off the top.
+  """
+  @type anchor :: %{block_id: String.t(), line: non_neg_integer()} | nil
+
   @type t :: %__MODULE__{
           active_messages: %{String.t() => atom()},
           active_permissions: term(),
           active_tools: %{String.t() => tool_state()},
+          anchor: anchor(),
           blocks: [Block.t()],
           follow?: boolean(),
-          max_blocks: pos_integer(),
-          top: non_neg_integer()
+          max_blocks: pos_integer()
         }
 
-  @type scroll_direction :: :page_up | :page_down | :top | :bottom
+  @type scroll_direction :: :page_up | :page_down | :top | :bottom | {:lines, integer()}
 
   @doc """
   Builds an empty transcript.
@@ -216,31 +223,30 @@ defmodule Tui.TerminalApp.Transcript do
   @spec visible_lines(t(), pos_integer(), pos_integer()) :: [String.t()]
   def visible_lines(%__MODULE__{} = transcript, width, height)
       when is_integer(width) and width > 0 and is_integer(height) and height > 0 do
-    lines = all_lines(transcript, width)
-    total = length(lines)
+    segments = segments(transcript, width)
+    lines = flat_lines(segments)
+    top = top_index(transcript, segments, length(lines), height)
 
-    if transcript.follow? or total <= height do
-      Enum.take(lines, -height)
-    else
-      top = clamp_top(transcript.top, total, height)
-
-      lines
-      |> Enum.drop(top)
-      |> Enum.take(height)
-    end
+    lines
+    |> Enum.drop(top)
+    |> Enum.take(height)
   end
 
   def visible_lines(%__MODULE__{}, _width, _height), do: []
 
   @doc """
   Scrolls the viewport. Reaching the bottom re-enables auto-follow.
+
+  `{:lines, n}` scrolls by `n` lines (negative scrolls up); `:page_up` /
+  `:page_down` move by a viewport height; `:top` / `:bottom` jump to the ends.
   """
   @spec scroll(t(), scroll_direction(), pos_integer(), pos_integer()) :: t()
   def scroll(%__MODULE__{} = transcript, direction, width, height)
       when is_integer(width) and width > 0 and is_integer(height) and height > 0 do
-    total = transcript |> all_lines(width) |> length()
+    segments = segments(transcript, width)
+    total = segments |> flat_lines() |> length()
     max_top = max(0, total - height)
-    current = if transcript.follow?, do: max_top, else: clamp_top(transcript.top, total, height)
+    current = top_index(transcript, segments, total, height)
 
     top =
       direction
@@ -248,10 +254,41 @@ defmodule Tui.TerminalApp.Transcript do
       |> max(0)
       |> min(max_top)
 
-    %{transcript | top: top, follow?: top >= max_top}
+    if top >= max_top do
+      %{transcript | follow?: true, anchor: nil}
+    else
+      %{transcript | follow?: false, anchor: index_anchor(segments, top)}
+    end
   end
 
   def scroll(%__MODULE__{} = transcript, _direction, _width, _height), do: transcript
+
+  @doc """
+  Returns scroll metrics for rendering a position indicator.
+
+  `position` is the top visible line index, `content_length` the total wrapped
+  line count, and `viewport` the visible height.
+  """
+  @spec viewport_metrics(t(), pos_integer(), pos_integer()) :: %{
+          content_length: non_neg_integer(),
+          position: non_neg_integer(),
+          viewport: pos_integer()
+        }
+  def viewport_metrics(%__MODULE__{} = transcript, width, height)
+      when is_integer(width) and width > 0 and is_integer(height) and height > 0 do
+    segments = segments(transcript, width)
+    total = segments |> flat_lines() |> length()
+
+    %{
+      content_length: total,
+      position: top_index(transcript, segments, total, height),
+      viewport: height
+    }
+  end
+
+  def viewport_metrics(%__MODULE__{}, _width, _height) do
+    %{content_length: 0, position: 0, viewport: 1}
+  end
 
   @doc """
   Clears the transcript.
@@ -263,9 +300,9 @@ defmodule Tui.TerminalApp.Transcript do
       | active_messages: %{},
         active_permissions: MapSet.new(),
         active_tools: %{},
+        anchor: nil,
         blocks: [],
-        follow?: true,
-        top: 0
+        follow?: true
     }
   end
 
@@ -433,10 +470,24 @@ defmodule Tui.TerminalApp.Transcript do
   defp args_line(args) when args == %{}, do: ""
   defp args_line(args), do: "args #{inspect(args)}"
 
-  defp all_lines(transcript, width) do
+  defp segments(transcript, width) do
     transcript.blocks
     |> Enum.reverse()
-    |> Enum.flat_map(&block_lines(&1, width))
+    |> Enum.map(fn %Block{id: id} = block -> {id, block_lines(block, width)} end)
+  end
+
+  defp flat_lines(segments) do
+    Enum.flat_map(segments, fn {_id, lines} -> lines end)
+  end
+
+  defp top_index(%__MODULE__{follow?: true}, _segments, total, height) do
+    max(0, total - height)
+  end
+
+  defp top_index(%__MODULE__{anchor: anchor}, segments, total, height) do
+    anchor
+    |> anchor_index(segments)
+    |> clamp_top(total, height)
   end
 
   defp clamp_top(top, total, height) do
@@ -445,10 +496,39 @@ defmodule Tui.TerminalApp.Transcript do
     |> min(max(0, total - height))
   end
 
+  defp anchor_index(nil, _segments), do: 0
+
+  defp anchor_index(%{block_id: id, line: line}, segments) do
+    anchor_index(segments, id, line, 0)
+  end
+
+  defp anchor_index([], _id, _line, _acc), do: 0
+
+  defp anchor_index([{id, lines} | _rest], id, line, acc) do
+    acc + min(max(0, line), max(0, length(lines) - 1))
+  end
+
+  defp anchor_index([{_other, lines} | rest], id, line, acc) do
+    anchor_index(rest, id, line, acc + length(lines))
+  end
+
+  defp index_anchor([], _index), do: nil
+
+  defp index_anchor([{id, lines} | rest], index) do
+    count = length(lines)
+
+    if index < count do
+      %{block_id: id, line: max(0, index)}
+    else
+      index_anchor(rest, index - count)
+    end
+  end
+
   defp next_top(:page_up, current, _max_top, height), do: current - height
   defp next_top(:page_down, current, _max_top, height), do: current + height
   defp next_top(:top, _current, _max_top, _height), do: 0
   defp next_top(:bottom, _current, max_top, _height), do: max_top
+  defp next_top({:lines, n}, current, _max_top, _height), do: current + n
 
   defp block_lines(%Block{kind: :system, body: []} = block, width) do
     wrap_line(block.title, width)
