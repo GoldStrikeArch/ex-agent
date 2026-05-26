@@ -9,6 +9,10 @@ defmodule Tui.TerminalApp.Transcript do
 
   alias Tui.Transcript.Block
 
+  # Column reserved on the right for the scrollbar. Reserved unconditionally so
+  # the layout does not reflow when the scrollbar appears or disappears.
+  @scrollbar_gutter 1
+
   defstruct active_messages: %{},
             active_permissions: MapSet.new(),
             active_tools: %{},
@@ -42,6 +46,21 @@ defmodule Tui.TerminalApp.Transcript do
 
   @type scroll_direction :: :page_up | :page_down | :top | :bottom | {:lines, integer()}
 
+  @typedoc "Style category attached to each rendered line for per-block colorizing."
+  @type style_tag ::
+          :system
+          | :label
+          | :user
+          | :assistant
+          | :tool_header
+          | :tool_body
+          | :permission
+          | :error
+          | :edit
+
+  @typedoc "A viewport line paired with the style category used to render it."
+  @type styled_line :: {style_tag(), String.t()}
+
   @doc """
   Builds an empty transcript.
   """
@@ -49,6 +68,18 @@ defmodule Tui.TerminalApp.Transcript do
   def new(opts \\ []) do
     max_blocks = opts |> Keyword.get(:max_blocks, 250) |> positive_integer_or(250)
     %__MODULE__{max_blocks: max_blocks}
+  end
+
+  @doc """
+  Width available for transcript text after reserving the scrollbar gutter.
+
+  Callers wrap and measure content against this width so a full-width line never
+  collides with the scrollbar drawn in the last column, and so the view stays
+  stable whether or not the scrollbar is currently shown.
+  """
+  @spec content_width(pos_integer()) :: pos_integer()
+  def content_width(total_width) when is_integer(total_width) and total_width > 0 do
+    max(1, total_width - @scrollbar_gutter)
   end
 
   @doc """
@@ -221,7 +252,21 @@ defmodule Tui.TerminalApp.Transcript do
   it.
   """
   @spec visible_lines(t(), pos_integer(), pos_integer()) :: [String.t()]
-  def visible_lines(%__MODULE__{} = transcript, width, height)
+  def visible_lines(%__MODULE__{} = transcript, width, height) do
+    transcript
+    |> visible_styled_lines(width, height)
+    |> Enum.map(&elem(&1, 1))
+  end
+
+  @doc """
+  Returns viewport-ready lines tagged with their style category.
+
+  Uses the same viewport math as `visible_lines/3`, but keeps the style tag
+  derived from each line's source block so renderers can colorize per block kind
+  (assistant text, tool output, errors, and so on).
+  """
+  @spec visible_styled_lines(t(), pos_integer(), pos_integer()) :: [styled_line()]
+  def visible_styled_lines(%__MODULE__{} = transcript, width, height)
       when is_integer(width) and width > 0 and is_integer(height) and height > 0 do
     segments = segments(transcript, width)
     lines = flat_lines(segments)
@@ -232,7 +277,7 @@ defmodule Tui.TerminalApp.Transcript do
     |> Enum.take(height)
   end
 
-  def visible_lines(%__MODULE__{}, _width, _height), do: []
+  def visible_styled_lines(%__MODULE__{}, _width, _height), do: []
 
   @doc """
   Scrolls the viewport. Reaching the bottom re-enables auto-follow.
@@ -531,7 +576,7 @@ defmodule Tui.TerminalApp.Transcript do
   defp next_top({:lines, n}, current, _max_top, _height), do: current + n
 
   defp block_lines(%Block{kind: :system, body: []} = block, width) do
-    wrap_line(block.title, width)
+    block.title |> wrap_line(width) |> tag_lines(:system)
   end
 
   defp block_lines(%Block{kind: :user} = block, width) do
@@ -539,13 +584,29 @@ defmodule Tui.TerminalApp.Transcript do
     |> body_text()
     |> then(&["user> " <> &1])
     |> wrap_lines(width)
+    |> tag_lines(:user)
   end
 
   defp block_lines(%Block{} = block, width) do
-    header = block_header(block)
-    body = Enum.flat_map(block.body, &body_lines(&1, width))
-    wrap_line(header, width) ++ body
+    header = block |> block_header() |> wrap_line(width) |> tag_lines(header_tag(block.kind))
+    body = Enum.flat_map(block.body, &tag_lines(body_lines(&1, width), body_tag(block.kind)))
+    header ++ body
   end
+
+  defp tag_lines(lines, tag), do: Enum.map(lines, &{tag, &1})
+
+  defp header_tag(:tool), do: :tool_header
+  defp header_tag(:permission), do: :permission
+  defp header_tag(:error), do: :error
+  defp header_tag(:edit), do: :edit
+  defp header_tag(_kind), do: :label
+
+  defp body_tag(:assistant), do: :assistant
+  defp body_tag(:tool), do: :tool_body
+  defp body_tag(:permission), do: :permission
+  defp body_tag(:error), do: :error
+  defp body_tag(:edit), do: :edit
+  defp body_tag(_kind), do: :system
 
   defp block_header(%Block{kind: :assistant, status: status, title: title}) do
     "assistant#{status_suffix(status, title)}"

@@ -149,4 +149,29 @@ defmodule Tui.TerminalApp.TranscriptTest do
     assert %{content_length: 10, position: 0, viewport: 3} =
              Transcript.viewport_metrics(scrolled, 80, 3)
   end
+
+  test "content_width reserves one column for the scrollbar gutter" do
+    assert Transcript.content_width(80) == 79
+    assert Transcript.content_width(1) == 1
+  end
+
+  test "tags visible lines with a style category per block kind" do
+    transcript =
+      Transcript.new()
+      |> Transcript.append_event({:user_message, "hi"})
+      |> Transcript.append_event({:message_started, "m1", :assistant})
+      |> Transcript.append_event({:message_delta, "m1", "answer"})
+      |> Transcript.append_event({:tool_started, "call-1", "read_file", %{path: "mix.exs"}})
+      |> Transcript.append_event({:error, :model, "boom"})
+
+    tagged = Transcript.visible_styled_lines(transcript, 80, 20)
+
+    assert {:user, "user> hi"} in tagged
+    assert {:assistant, "  answer"} in tagged
+    assert Enum.any?(tagged, &match?({:tool_header, _}, &1))
+    assert Enum.any?(tagged, &match?({:error, _}, &1))
+
+    # visible_lines keeps returning plain strings for the same content
+    assert "user> hi" in Transcript.visible_lines(transcript, 80, 20)
+  end
 end

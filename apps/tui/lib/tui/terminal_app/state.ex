@@ -94,7 +94,8 @@ defmodule Tui.TerminalApp.State do
   end
 
   def reduce({:scroll, direction, height}, state) do
-    transcript = Transcript.scroll(state.transcript, direction, state.width, height)
+    width = Transcript.content_width(state.width)
+    transcript = Transcript.scroll(state.transcript, direction, width, height)
     {%{state | transcript: transcript}, []}
   end
 

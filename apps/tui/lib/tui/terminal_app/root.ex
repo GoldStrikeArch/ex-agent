@@ -143,7 +143,11 @@ defmodule Tui.TerminalApp.Root do
     |> add_widget(StatusBar.render(state.status, width), layout.status)
     |> add_line(Text.divider(width), layout.top_divider, %Style{fg: :dark_gray})
     |> add_widget(
-      Transcript.render(state.transcript, layout.transcript.width, layout.transcript.height),
+      Transcript.render(
+        state.transcript,
+        Transcript.content_width(layout.transcript.width),
+        layout.transcript.height
+      ),
       layout.transcript
     )
     |> add_scrollbar(state.transcript, layout.transcript)
@@ -239,7 +243,9 @@ defmodule Tui.TerminalApp.Root do
 
   defp add_scrollbar(widgets, transcript, %Rect{} = rect)
        when rect.width > 1 and rect.height > 0 do
-    metrics = Transcript.viewport_metrics(transcript, rect.width, rect.height)
+    metrics =
+      Transcript.viewport_metrics(transcript, Transcript.content_width(rect.width), rect.height)
+
     # ratatui normalizes the thumb by `position / content_length` and uses
     # `viewport_content_length` only for thumb size, so drive the bar with the
     # scrollable range (total - viewport). That maps a top position of 0 to the
