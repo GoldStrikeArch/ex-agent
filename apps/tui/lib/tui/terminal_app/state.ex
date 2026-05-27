@@ -24,6 +24,7 @@ defmodule Tui.TerminalApp.State do
             panel: nil,
             pending_prompts: MapSet.new(),
             selected_command: 0,
+            spinner: 0,
             status: nil,
             submit_prompt: nil,
             task_supervisor: nil,
@@ -41,6 +42,7 @@ defmodule Tui.TerminalApp.State do
           panel: :help | :status | nil,
           pending_prompts: term(),
           selected_command: non_neg_integer(),
+          spinner: non_neg_integer(),
           status: Status.t(),
           submit_prompt: Tui.TerminalApp.submit_prompt() | nil,
           task_supervisor: GenServer.server() | nil,
@@ -133,11 +135,13 @@ defmodule Tui.TerminalApp.State do
   end
 
   def reduce({:agent_event, event}, state) do
+    now = System.monotonic_time(:millisecond)
+
     state =
       %{
         state
         | status: Status.reduce_event(state.status, event),
-          transcript: Transcript.append_event(state.transcript, event)
+          transcript: Transcript.append_event(state.transcript, event, now)
       }
 
     {state, []}
@@ -201,6 +205,8 @@ defmodule Tui.TerminalApp.State do
      []}
   end
 
+  def reduce(:spinner_tick, state), do: {%{state | spinner: state.spinner + 1}, []}
+
   def reduce(:quit, state), do: {state, [:quit]}
   def reduce(_msg, state), do: {state, []}
 
@@ -213,6 +219,15 @@ defmodule Tui.TerminalApp.State do
     |> Prompt.value()
     |> CommandMenu.visible?()
   end
+
+  @doc """
+  Returns true while at least one tool is still running.
+
+  Drives the spinner animation: the root only arms the tick subscription while
+  this holds, so the UI stays idle when nothing is in flight.
+  """
+  @spec running?(t()) :: boolean()
+  def running?(state), do: Transcript.running?(state.transcript)
 
   @doc """
   Returns the prompt textarea width for a screen width.

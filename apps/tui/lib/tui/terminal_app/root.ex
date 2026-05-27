@@ -13,6 +13,7 @@ defmodule Tui.TerminalApp.Root do
   alias ExRatatui.Frame
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Style
+  alias ExRatatui.Subscription
   alias ExRatatui.Widgets.Paragraph
   alias ExRatatui.Widgets.Scrollbar
   alias Tui.Components.CommandPalette
@@ -29,6 +30,9 @@ defmodule Tui.TerminalApp.Root do
 
   # Lines scrolled per mouse-wheel notch.
   @mouse_scroll_step 3
+
+  # Spinner animation cadence while tools are running.
+  @spinner_interval_ms 100
 
   @doc """
   Builds the initial root state.
@@ -129,6 +133,15 @@ defmodule Tui.TerminalApp.Root do
     scene(state, frame)
   end
 
+  @impl true
+  def subscriptions(state) do
+    if State.running?(state) do
+      [Subscription.interval(:spinner, @spinner_interval_ms, :spinner_tick)]
+    else
+      []
+    end
+  end
+
   @doc """
   Renders the current state into ExRatatui widgets.
   """
@@ -146,7 +159,8 @@ defmodule Tui.TerminalApp.Root do
       Transcript.render(
         state.transcript,
         Transcript.content_width(layout.transcript.width),
-        layout.transcript.height
+        layout.transcript.height,
+        Transcript.spinner_glyph(state.spinner)
       ),
       layout.transcript
     )

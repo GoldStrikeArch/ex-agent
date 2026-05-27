@@ -174,4 +174,120 @@ defmodule Tui.TerminalApp.TranscriptTest do
     # visible_lines keeps returning plain strings for the same content
     assert "user> hi" in Transcript.visible_lines(transcript, 80, 20)
   end
+
+  test "colors diff lines by their prefix" do
+    diff = "@@ -1,2 +1,2 @@\n context\n-removed\n+added"
+
+    tagged =
+      Transcript.new()
+      |> Transcript.append_event({:edit_preview, "edit-1", "lib/a.ex", diff})
+      |> Transcript.visible_styled_lines(80, 20)
+
+    assert {:diff_hunk, "  @@ -1,2 +1,2 @@"} in tagged
+    assert {:diff_context, "   context"} in tagged
+    assert {:diff_del, "  -removed"} in tagged
+    assert {:diff_add, "  +added"} in tagged
+  end
+
+  test "renders a tool as `name target` with a timing line from injected timestamps" do
+    transcript =
+      Transcript.new()
+      |> Transcript.append_event(
+        {:tool_started, "t1", "read_file", %{"path" => "README.md"}},
+        1_000
+      )
+      |> Transcript.append_event({:tool_finished, "t1", :ok, "read 10 lines"}, 1_050)
+
+    assert [%{kind: :tool, title: "read_file README.md", body: body}] =
+             Transcript.blocks(transcript)
+
+    assert "summary read 10 lines" in body
+    assert "Took 50ms" in body
+  end
+
+  test "omits the timing line when no timestamp is supplied" do
+    transcript =
+      Transcript.new()
+      |> Transcript.append_event({:tool_started, "t1", "read_file", %{"path" => "README.md"}})
+      |> Transcript.append_event({:tool_finished, "t1", :ok, "done"})
+
+    assert [%{kind: :tool, body: body}] = Transcript.blocks(transcript)
+    refute Enum.any?(body, &String.starts_with?(&1, "Took "))
+  end
+
+  test "separates blocks of different kinds with a blank line" do
+    tagged =
+      Transcript.new()
+      |> Transcript.append_event({:user_message, "hi"})
+      |> Transcript.append_event({:message_started, "m1", :assistant})
+      |> Transcript.append_event({:message_delta, "m1", "yo"})
+      |> Transcript.visible_styled_lines(80, 20)
+
+    assert {:blank, ""} in tagged
+
+    # consecutive same-kind blocks are not separated
+    same_kind =
+      Transcript.new()
+      |> Transcript.append_event({:user_message, "one"})
+      |> Transcript.append_event({:user_message, "two"})
+      |> Transcript.visible_styled_lines(80, 20)
+
+    refute {:blank, ""} in same_kind
+  end
+
+  test "display_width counts wide and zero-width characters" do
+    assert Transcript.display_width("abc") == 3
+    # CJK characters occupy two columns each
+    assert Transcript.display_width("你好") == 4
+    # a combining mark adds no width on top of its base letter
+    assert Transcript.display_width("é") == 1
+  end
+
+  test "wraps on word boundaries instead of mid-word" do
+    lines =
+      Transcript.new()
+      |> Transcript.append_event({:user_message, "alpha beta gamma delta"})
+      # content width 12 -> "user> alpha", then the rest wraps at spaces
+      |> Transcript.visible_lines(12, 20)
+
+    assert "user> alpha" in lines
+    refute Enum.any?(lines, &String.contains?(&1, "alp\nha"))
+    assert Enum.all?(lines, &(Transcript.display_width(&1) <= 12))
+  end
+
+  test "wraps wide characters by display width, not grapheme count" do
+    lines =
+      Transcript.new()
+      |> Transcript.append_event({:user_message, "你好世界你好世界"})
+      |> Transcript.visible_lines(10, 20)
+
+    # every wrapped line stays within the 10-column viewport
+    assert Enum.all?(lines, &(Transcript.display_width(&1) <= 10))
+    # and a naive grapheme-chunk would have overflowed (8 CJK = 16 columns)
+    assert Transcript.display_width(Enum.join(lines)) >= 16
+  end
+
+  test "prefixes a running tool header with the spinner glyph, finished tools without" do
+    transcript =
+      Transcript.new()
+      |> Transcript.append_event({:tool_started, "t1", "read_file", %{"path" => "mix.exs"}})
+
+    assert running =
+             transcript
+             |> Transcript.visible_styled_lines(80, 20, "*")
+             |> Enum.find_value(fn {:tool_header, text} -> text end)
+
+    assert running == "* read_file mix.exs"
+    assert Transcript.running?(transcript)
+
+    finished = Transcript.append_event(transcript, {:tool_finished, "t1", :ok, "ok"})
+
+    headers =
+      finished
+      |> Transcript.visible_styled_lines(80, 20, "*")
+      |> Enum.filter(&match?({:tool_header, _}, &1))
+
+    assert Enum.any?(headers, fn {_tag, text} -> text == "[done] read_file mix.exs" end)
+    refute Transcript.running?(finished)
+  end
 end

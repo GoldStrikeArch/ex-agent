@@ -24,7 +24,9 @@ defmodule Tui.TerminalApp.Transcript do
   @type tool_state :: %{
           name: String.t(),
           args: map(),
-          output_bytes: non_neg_integer()
+          output_bytes: non_neg_integer(),
+          started_at: integer() | nil,
+          duration_ms: non_neg_integer() | nil
         }
 
   @typedoc """
@@ -48,7 +50,8 @@ defmodule Tui.TerminalApp.Transcript do
 
   @typedoc "Style category attached to each rendered line for per-block colorizing."
   @type style_tag ::
-          :system
+          :blank
+          | :system
           | :label
           | :user
           | :assistant
@@ -57,6 +60,10 @@ defmodule Tui.TerminalApp.Transcript do
           | :permission
           | :error
           | :edit
+          | :diff_add
+          | :diff_del
+          | :diff_hunk
+          | :diff_context
 
   @typedoc "A viewport line paired with the style category used to render it."
   @type styled_line :: {style_tag(), String.t()}
@@ -134,18 +141,13 @@ defmodule Tui.TerminalApp.Transcript do
   end
 
   def append_event(%__MODULE__{} = transcript, {:tool_started, call_id, name, args}) do
-    call_id = to_string(call_id)
-    tool = %{name: name, args: args, output_bytes: 0}
-
-    transcript
-    |> Map.update!(:active_tools, &Map.put(&1, call_id, tool))
-    |> append_block(tool_block(call_id, tool, :streaming, "running"))
+    do_tool_started(transcript, call_id, name, args, nil)
   end
 
   def append_event(%__MODULE__{} = transcript, {:tool_output, call_id, chunk})
       when is_binary(chunk) do
     call_id = to_string(call_id)
-    tool = Map.get(transcript.active_tools, call_id, %{name: call_id, args: %{}, output_bytes: 0})
+    tool = Map.get(transcript.active_tools, call_id, default_tool(call_id))
     tool = Map.update!(tool, :output_bytes, &(&1 + byte_size(chunk)))
 
     transcript
@@ -154,17 +156,7 @@ defmodule Tui.TerminalApp.Transcript do
   end
 
   def append_event(%__MODULE__{} = transcript, {:tool_finished, call_id, status, summary}) do
-    call_id = to_string(call_id)
-    {tool, active_tools} = Map.pop(transcript.active_tools, call_id)
-    tool = tool || %{name: call_id, args: %{}, output_bytes: 0}
-    block_status = block_status(status)
-
-    transcript
-    |> Map.put(:active_tools, active_tools)
-    |> replace_or_append_block(
-      call_id,
-      tool_block(call_id, tool, block_status, format_summary(summary))
-    )
+    do_tool_finished(transcript, call_id, status, summary, nil)
   end
 
   def append_event(%__MODULE__{} = transcript, {:batch_started, batch_id, count}) do
@@ -231,6 +223,31 @@ defmodule Tui.TerminalApp.Transcript do
   end
 
   @doc """
+  Appends one agent event tagged with the time it was received.
+
+  `now_ms` is a monotonic millisecond reading taken at the edge (the UI reducer).
+  Passing it in lets tool blocks report their duration without this module
+  reading the clock, so the fold stays pure and deterministic. `append_event/2`
+  is `append_event/3` with no timestamp, in which case no timing is shown.
+  """
+  @spec append_event(t(), tuple(), integer() | nil) :: t()
+  def append_event(%__MODULE__{} = transcript, {:tool_started, call_id, name, args}, now_ms) do
+    do_tool_started(transcript, call_id, name, args, now_ms)
+  end
+
+  def append_event(
+        %__MODULE__{} = transcript,
+        {:tool_finished, call_id, status, summary},
+        now_ms
+      ) do
+    do_tool_finished(transcript, call_id, status, summary, now_ms)
+  end
+
+  def append_event(%__MODULE__{} = transcript, event, _now_ms) do
+    append_event(transcript, event)
+  end
+
+  @doc """
   Appends already-rendered text as a system transcript block.
   """
   @spec append_text(String.t(), t()) :: t()
@@ -266,9 +283,21 @@ defmodule Tui.TerminalApp.Transcript do
   (assistant text, tool output, errors, and so on).
   """
   @spec visible_styled_lines(t(), pos_integer(), pos_integer()) :: [styled_line()]
-  def visible_styled_lines(%__MODULE__{} = transcript, width, height)
+  def visible_styled_lines(%__MODULE__{} = transcript, width, height) do
+    visible_styled_lines(transcript, width, height, "")
+  end
+
+  @doc """
+  Like `visible_styled_lines/3`, but prefixes running tool headers with `spinner`.
+
+  `spinner` is the current animation glyph (a string), supplied by the renderer.
+  It is baked into the header text before wrapping so width accounting stays
+  correct; passing `""` shows no spinner.
+  """
+  @spec visible_styled_lines(t(), pos_integer(), pos_integer(), String.t()) :: [styled_line()]
+  def visible_styled_lines(%__MODULE__{} = transcript, width, height, spinner)
       when is_integer(width) and width > 0 and is_integer(height) and height > 0 do
-    segments = segments(transcript, width)
+    segments = segments(transcript, width, spinner)
     lines = flat_lines(segments)
     top = top_index(transcript, segments, length(lines), height)
 
@@ -277,7 +306,13 @@ defmodule Tui.TerminalApp.Transcript do
     |> Enum.take(height)
   end
 
-  def visible_styled_lines(%__MODULE__{}, _width, _height), do: []
+  def visible_styled_lines(%__MODULE__{}, _width, _height, _spinner), do: []
+
+  @doc """
+  Returns true while at least one tool is still running.
+  """
+  @spec running?(t()) :: boolean()
+  def running?(%__MODULE__{active_tools: active_tools}), do: active_tools != %{}
 
   @doc """
   Scrolls the viewport. Reaching the bottom re-enables auto-follow.
@@ -288,7 +323,7 @@ defmodule Tui.TerminalApp.Transcript do
   @spec scroll(t(), scroll_direction(), pos_integer(), pos_integer()) :: t()
   def scroll(%__MODULE__{} = transcript, direction, width, height)
       when is_integer(width) and width > 0 and is_integer(height) and height > 0 do
-    segments = segments(transcript, width)
+    segments = segments(transcript, width, "")
     total = segments |> flat_lines() |> length()
     max_top = max(0, total - height)
     current = top_index(transcript, segments, total, height)
@@ -321,7 +356,7 @@ defmodule Tui.TerminalApp.Transcript do
         }
   def viewport_metrics(%__MODULE__{} = transcript, width, height)
       when is_integer(width) and width > 0 and is_integer(height) and height > 0 do
-    segments = segments(transcript, width)
+    segments = segments(transcript, width, "")
     total = segments |> flat_lines() |> length()
 
     %{
@@ -463,10 +498,88 @@ defmodule Tui.TerminalApp.Transcript do
   end
 
   defp tool_block(call_id, tool, status, summary) do
-    title = "tool #{tool.name}"
-    body = ["output #{tool.output_bytes} B", summary_line(summary), args_line(tool.args)]
-    block(call_id, :tool, status, title, Enum.reject(body, &(&1 == "")))
+    body =
+      [summary_line(summary), bytes_line(tool), timing_line(tool), args_line(tool.args)]
+      |> Enum.reject(&(&1 == ""))
+
+    block(call_id, :tool, status, tool_title(tool), body)
   end
+
+  defp do_tool_started(transcript, call_id, name, args, now_ms) do
+    call_id = to_string(call_id)
+    tool = %{default_tool(name) | args: args, started_at: now_ms}
+
+    transcript
+    |> Map.update!(:active_tools, &Map.put(&1, call_id, tool))
+    |> append_block(tool_block(call_id, tool, :streaming, "running"))
+  end
+
+  defp do_tool_finished(transcript, call_id, status, summary, now_ms) do
+    call_id = to_string(call_id)
+    {tool, active_tools} = Map.pop(transcript.active_tools, call_id)
+    tool = tool || default_tool(call_id)
+    tool = Map.put(tool, :duration_ms, duration(tool, now_ms))
+
+    transcript
+    |> Map.put(:active_tools, active_tools)
+    |> replace_or_append_block(
+      call_id,
+      tool_block(call_id, tool, block_status(status), format_summary(summary))
+    )
+  end
+
+  defp default_tool(name) do
+    %{name: to_string(name), args: %{}, output_bytes: 0, started_at: nil, duration_ms: nil}
+  end
+
+  defp duration(%{started_at: started}, now) when is_integer(started) and is_integer(now) do
+    max(0, now - started)
+  end
+
+  defp duration(_tool, _now), do: nil
+
+  # A tool reads as `name target`, e.g. `read_file mix.exs`, mirroring Pi.
+  defp tool_title(tool) do
+    [tool.name, tool_target(tool.args)]
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join(" ")
+  end
+
+  @tool_target_keys [
+    "path",
+    :path,
+    "file_path",
+    :file_path,
+    "file",
+    :file,
+    "command",
+    :command,
+    "pattern",
+    :pattern
+  ]
+
+  defp tool_target(args) when is_map(args) do
+    @tool_target_keys
+    |> Enum.find_value("", fn key ->
+      case Map.fetch(args, key) do
+        {:ok, value} when is_binary(value) -> first_line(value)
+        _ -> nil
+      end
+    end)
+  end
+
+  defp tool_target(_args), do: ""
+
+  defp first_line(value), do: value |> String.split("\n", parts: 2) |> hd()
+
+  defp bytes_line(%{output_bytes: 0}), do: ""
+  defp bytes_line(%{output_bytes: bytes}), do: "output #{bytes} B"
+
+  defp timing_line(%{duration_ms: ms}) when is_integer(ms), do: "Took #{format_duration(ms)}"
+  defp timing_line(_tool), do: ""
+
+  defp format_duration(ms) when ms < 1000, do: "#{ms}ms"
+  defp format_duration(ms), do: :erlang.float_to_binary(ms / 1000, decimals: 1) <> "s"
 
   defp block(id, kind, status, title, body) do
     %Block{
@@ -510,16 +623,29 @@ defmodule Tui.TerminalApp.Transcript do
   defp format_summary(summary), do: inspect(summary)
 
   defp summary_line(""), do: ""
+  defp summary_line("running"), do: ""
   defp summary_line(summary), do: "summary #{summary}"
 
   defp args_line(args) when args == %{}, do: ""
   defp args_line(args), do: "args #{inspect(args)}"
 
-  defp segments(transcript, width) do
-    transcript.blocks
-    |> Enum.reverse()
-    |> Enum.map(fn %Block{id: id} = block -> {id, block_lines(block, width)} end)
+  defp segments(transcript, width, spinner) do
+    {segments, _prev_kind} =
+      transcript.blocks
+      |> Enum.reverse()
+      |> Enum.map_reduce(nil, fn %Block{id: id, kind: kind} = block, prev_kind ->
+        lines = spacer(kind, prev_kind) ++ block_lines(block, width, spinner)
+        {{id, lines}, kind}
+      end)
+
+    segments
   end
+
+  # Separate adjacent blocks with a blank line only when the kind changes, so
+  # turns and roles get breathing room without splitting runs of same-kind lines.
+  defp spacer(_kind, nil), do: []
+  defp spacer(kind, kind), do: []
+  defp spacer(_kind, _prev_kind), do: [{:blank, ""}]
 
   defp flat_lines(segments) do
     Enum.flat_map(segments, fn {_id, lines} -> lines end)
@@ -575,11 +701,11 @@ defmodule Tui.TerminalApp.Transcript do
   defp next_top(:bottom, _current, max_top, _height), do: max_top
   defp next_top({:lines, n}, current, _max_top, _height), do: current + n
 
-  defp block_lines(%Block{kind: :system, body: []} = block, width) do
+  defp block_lines(%Block{kind: :system, body: []} = block, width, _spinner) do
     block.title |> wrap_line(width) |> tag_lines(:system)
   end
 
-  defp block_lines(%Block{kind: :user} = block, width) do
+  defp block_lines(%Block{kind: :user} = block, width, _spinner) do
     block
     |> body_text()
     |> then(&["user> " <> &1])
@@ -587,26 +713,62 @@ defmodule Tui.TerminalApp.Transcript do
     |> tag_lines(:user)
   end
 
-  defp block_lines(%Block{} = block, width) do
-    header = block |> block_header() |> wrap_line(width) |> tag_lines(header_tag(block.kind))
-    body = Enum.flat_map(block.body, &tag_lines(body_lines(&1, width), body_tag(block.kind)))
+  defp block_lines(%Block{} = block, width, spinner) do
+    header_tag = header_tag(block.kind, block.status)
+    header = block |> block_header(spinner) |> wrap_line(width) |> tag_lines(header_tag)
+    body = Enum.flat_map(block.body, &body_lines_for(block.kind, &1, width))
     header ++ body
   end
 
   defp tag_lines(lines, tag), do: Enum.map(lines, &{tag, &1})
 
-  defp header_tag(:tool), do: :tool_header
-  defp header_tag(:permission), do: :permission
-  defp header_tag(:error), do: :error
-  defp header_tag(:edit), do: :edit
-  defp header_tag(_kind), do: :label
+  # A failed tool keeps the error color so the header reads as red, not green.
+  defp header_tag(:tool, :error), do: :error
+  defp header_tag(:tool, _status), do: :tool_header
+  defp header_tag(:permission, _status), do: :permission
+  defp header_tag(:error, _status), do: :error
+  defp header_tag(:edit, _status), do: :edit
+  defp header_tag(_kind, _status), do: :label
+
+  defp body_lines_for(:edit, text, width), do: diff_body_lines(text, width)
+
+  defp body_lines_for(kind, text, width) do
+    text |> body_lines(width) |> tag_lines(body_tag(kind))
+  end
+
+  # Tag each physical diff line by its prefix so additions, deletions, and hunk
+  # headers colorize independently within one edit block.
+  defp diff_body_lines(text, width) do
+    text
+    |> String.split("\n")
+    |> Enum.flat_map(fn line ->
+      ("  " <> line) |> wrap_line(width) |> tag_lines(diff_tag(line))
+    end)
+  end
+
+  defp diff_tag("+++" <> _), do: :diff_hunk
+  defp diff_tag("---" <> _), do: :diff_hunk
+  defp diff_tag("@@" <> _), do: :diff_hunk
+  defp diff_tag("+" <> _), do: :diff_add
+  defp diff_tag("-" <> _), do: :diff_del
+  defp diff_tag(_line), do: :diff_context
 
   defp body_tag(:assistant), do: :assistant
   defp body_tag(:tool), do: :tool_body
   defp body_tag(:permission), do: :permission
   defp body_tag(:error), do: :error
-  defp body_tag(:edit), do: :edit
   defp body_tag(_kind), do: :system
+
+  # A running tool shows an animated spinner in place of a "[running]" label;
+  # finished and non-tool blocks keep their textual status header.
+  defp block_header(%Block{kind: :tool, status: :streaming, title: title}, spinner) do
+    spinner_prefix(spinner) <> title
+  end
+
+  defp block_header(%Block{} = block, _spinner), do: block_header(block)
+
+  defp spinner_prefix(""), do: ""
+  defp spinner_prefix(glyph), do: glyph <> " "
 
   defp block_header(%Block{kind: :assistant, status: status, title: title}) do
     "assistant#{status_suffix(status, title)}"
@@ -649,14 +811,109 @@ defmodule Tui.TerminalApp.Transcript do
     Enum.flat_map(lines, &wrap_line(&1, width))
   end
 
+  # Wraps a single line (no embedded newlines) to `width` terminal columns,
+  # breaking at whitespace where possible and hard-splitting only words that are
+  # themselves wider than `width`. Width is measured in display columns, not
+  # graphemes, so wide CJK/emoji do not overflow the viewport.
   defp wrap_line("", _width), do: [""]
 
   defp wrap_line(line, width) do
     line
-    |> String.graphemes()
-    |> Enum.chunk_every(width)
-    |> Enum.map(&Enum.join/1)
+    |> tokenize(width)
+    |> pack_tokens(width)
   end
+
+  # Split into alternating word / whitespace tokens, pre-splitting any word that
+  # cannot fit on a line so the packer never has to break inside a token.
+  defp tokenize(line, width) do
+    ~r/\s+|\S+/u
+    |> Regex.scan(line)
+    |> Enum.flat_map(fn [token] ->
+      if whitespace?(token), do: [token], else: hard_wrap(token, width)
+    end)
+  end
+
+  defp pack_tokens(tokens, width) do
+    {lines, current, _current_width} =
+      Enum.reduce(tokens, {[], "", 0}, fn token, {lines, current, current_width} ->
+        token_width = display_width(token)
+
+        cond do
+          current == "" ->
+            {lines, token, token_width}
+
+          current_width + token_width <= width ->
+            {lines, current <> token, current_width + token_width}
+
+          whitespace?(token) ->
+            {[current | lines], "", 0}
+
+          true ->
+            {[current | lines], token, token_width}
+        end
+      end)
+
+    [current | lines]
+    |> Enum.reverse()
+    |> Enum.map(&String.trim_trailing/1)
+  end
+
+  defp hard_wrap(word, width) do
+    {pieces, current, _current_width} =
+      word
+      |> String.graphemes()
+      |> Enum.reduce({[], "", 0}, fn grapheme, {pieces, current, current_width} ->
+        grapheme_width = grapheme_width(grapheme)
+
+        if current != "" and current_width + grapheme_width > width do
+          {[current | pieces], grapheme, grapheme_width}
+        else
+          {pieces, current <> grapheme, current_width + grapheme_width}
+        end
+      end)
+
+    Enum.reverse([current | pieces])
+  end
+
+  defp whitespace?(token), do: String.trim_leading(token) == ""
+
+  @doc """
+  Returns the number of terminal columns a string occupies.
+
+  Width is summed per grapheme using an approximate East-Asian-width table:
+  wide CJK and emoji count as 2 columns, combining marks and zero-width
+  characters as 0, and everything else as 1. It is an approximation (notably for
+  complex emoji ZWJ sequences), good enough to keep wrapping inside the viewport.
+  """
+  @spec display_width(String.t()) :: non_neg_integer()
+  def display_width(string) when is_binary(string) do
+    string
+    |> String.graphemes()
+    |> Enum.reduce(0, fn grapheme, acc -> acc + grapheme_width(grapheme) end)
+  end
+
+  defp grapheme_width(grapheme) do
+    grapheme |> String.to_charlist() |> hd() |> codepoint_width()
+  end
+
+  defp codepoint_width(cp) when cp in 0x0300..0x036F, do: 0
+  defp codepoint_width(cp) when cp in 0x200B..0x200F, do: 0
+  defp codepoint_width(cp) when cp in 0xFE00..0xFE0F, do: 0
+  defp codepoint_width(0xFEFF), do: 0
+  defp codepoint_width(cp) when cp in 0x1100..0x115F, do: 2
+  defp codepoint_width(cp) when cp in 0x2E80..0x303E, do: 2
+  defp codepoint_width(cp) when cp in 0x3041..0x33FF, do: 2
+  defp codepoint_width(cp) when cp in 0x3400..0x4DBF, do: 2
+  defp codepoint_width(cp) when cp in 0x4E00..0x9FFF, do: 2
+  defp codepoint_width(cp) when cp in 0xA000..0xA4CF, do: 2
+  defp codepoint_width(cp) when cp in 0xAC00..0xD7A3, do: 2
+  defp codepoint_width(cp) when cp in 0xF900..0xFAFF, do: 2
+  defp codepoint_width(cp) when cp in 0xFE30..0xFE4F, do: 2
+  defp codepoint_width(cp) when cp in 0xFF00..0xFF60, do: 2
+  defp codepoint_width(cp) when cp in 0xFFE0..0xFFE6, do: 2
+  defp codepoint_width(cp) when cp in 0x1F300..0x1FAFF, do: 2
+  defp codepoint_width(cp) when cp in 0x20000..0x3FFFD, do: 2
+  defp codepoint_width(_cp), do: 1
 
   defp unique_id(prefix) do
     "#{prefix}-#{System.unique_integer([:positive])}"
