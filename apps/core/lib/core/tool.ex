@@ -9,7 +9,11 @@ defmodule Core.Tool do
   @type context :: %{
           required(:workspace_root) => Path.t(),
           optional(:permission_mode) => Core.PermissionPolicy.mode(),
-          optional(:file_lock_manager) => GenServer.server()
+          optional(:file_lock_manager) => GenServer.server(),
+          optional(:tools) => [module()],
+          optional(:structural_backend) => module(),
+          optional(:tool_timeout_ms) => pos_integer(),
+          optional(:batch_timeout_ms) => pos_integer()
         }
   @type result :: %{
           optional(:output) => String.t(),

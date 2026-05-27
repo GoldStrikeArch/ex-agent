@@ -13,6 +13,7 @@ defmodule Core.FileLockManager do
   @default_lock_stale_after_ms 30_000
   @default_lock_retry_sleep_ms 10
   @default_lock_retry_count 100
+  @lock_poll_ms 5
 
   @doc """
   Starts the file lock manager.
@@ -43,16 +44,58 @@ defmodule Core.FileLockManager do
 
   @doc """
   Runs `fun` while holding a file lock.
+
+  The third argument is either a manager server (backwards-compatible) or a
+  keyword list of options:
+
+    * `:manager` - lock manager server (default `#{inspect(__MODULE__)}`).
+    * `:wait_ms` - how long to wait for a contended lock before returning
+      `{:error, :locked}` (default `0`, i.e. fail immediately).
+
+  Waiting lets independent processes serialize writes to the same path instead
+  of racing to `{:error, :locked}`. Cross-path locks never contend, so unrelated
+  writes still run concurrently.
   """
-  @spec with_lock(Path.t(), (-> result), GenServer.server()) :: {:ok, result} | {:error, :locked}
+  @spec with_lock(Path.t(), (-> result), GenServer.server() | keyword()) ::
+          {:ok, result} | {:error, :locked}
         when result: term()
-  def with_lock(path, fun, manager \\ __MODULE__) when is_binary(path) and is_function(fun, 0) do
-    with :ok <- acquire(path, manager) do
+  def with_lock(path, fun, opts_or_manager \\ [])
+
+  def with_lock(path, fun, opts)
+      when is_binary(path) and is_function(fun, 0) and is_list(opts) do
+    manager = Keyword.get(opts, :manager, __MODULE__)
+    wait_ms = Keyword.get(opts, :wait_ms, 0)
+    locked(path, fun, manager, wait_ms)
+  end
+
+  def with_lock(path, fun, manager) when is_binary(path) and is_function(fun, 0) do
+    locked(path, fun, manager, 0)
+  end
+
+  defp locked(path, fun, manager, wait_ms) do
+    deadline = System.monotonic_time(:millisecond) + wait_ms
+
+    with :ok <- acquire_until(path, manager, deadline) do
       try do
         {:ok, fun.()}
       after
         release(path, manager)
       end
+    end
+  end
+
+  defp acquire_until(path, manager, deadline) do
+    case acquire(path, manager) do
+      :ok ->
+        :ok
+
+      {:error, :locked} = error ->
+        if System.monotonic_time(:millisecond) < deadline do
+          Process.sleep(@lock_poll_ms)
+          acquire_until(path, manager, deadline)
+        else
+          error
+        end
     end
   end
 

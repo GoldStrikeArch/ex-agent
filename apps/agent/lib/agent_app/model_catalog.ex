@@ -21,7 +21,9 @@ defmodule AgentApp.ModelCatalog do
   @default_instructions """
   You are a coding agent running in a local workspace.
   Inspect before editing.
-  Prefer batching independent read-only tool calls.
+  Prefer batching independent read-only tool calls; emit sibling tool calls or use the batch tool to run them in parallel.
+  Prefer structural tools for navigation when available: use symbol_search to find definitions, ast_outline before reading large files, and fetch_node to inspect exact definitions.
+  When structural tools report the backend is unavailable, fall back to grep and read_file.
   Use shell commands only when they directly help the task.
   After edits, run focused validation when possible.
   Keep responses concise and grounded in observed files and command output.

@@ -9,6 +9,7 @@ defmodule Core.Application do
       Core.EventBus,
       Core.FileLockManager,
       Core.SessionSupervisor,
+      Core.TurnTaskSupervisor,
       Core.ToolTaskSupervisor
     ]
 

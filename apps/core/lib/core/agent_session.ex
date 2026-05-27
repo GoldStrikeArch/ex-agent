@@ -2,10 +2,19 @@ defmodule Core.AgentSession do
   @moduledoc """
   Coordinates one conversational agent session.
 
-  The current skeleton keeps model calls synchronous because the mock client is
-  local and deterministic. Real provider implementations should move streaming
-  work out of the GenServer through `Core.ToolTaskSupervisor` or a
-  provider-specific supervised process.
+  The session GenServer owns durable session state: the message transcript and
+  the model/tool configuration. Each turn runs in a separate task supervised by
+  `Core.TurnTaskSupervisor` (see `Core.TurnRunner`), so the session stays
+  responsive during a turn:
+
+    * `send_message/2` stays synchronous for callers: the caller blocks until the
+      turn task finishes and the session replies with `GenServer.reply/2`.
+    * `messages/1` returns the current transcript even while a turn is running.
+    * `abort/1` cancels the active turn and its in-flight tool tasks, keeps the
+      session alive, and fails the waiting caller with `{:error, :aborted}`.
+
+  A second prompt submitted during an active turn returns
+  `{:error, :turn_in_progress}`.
   """
 
   use GenServer
@@ -29,6 +38,9 @@ defmodule Core.AgentSession do
            user_message: message()
          }
 
+  @default_tool_timeout_ms 600_000
+  @default_batch_timeout_ms 900_000
+
   defstruct session_id: nil,
             messages: [],
             model_client: Mock,
@@ -37,7 +49,11 @@ defmodule Core.AgentSession do
             tools: [],
             workspace_root: nil,
             file_lock_manager: Core.FileLockManager,
-            max_tool_iterations: :infinity
+            max_tool_iterations: :infinity,
+            tool_timeout_ms: @default_tool_timeout_ms,
+            batch_timeout_ms: @default_batch_timeout_ms,
+            structural_backend: Core.Structural.Backend.Unavailable,
+            active_turn: nil
 
   @doc """
   Starts an unsupervised session process.
@@ -49,6 +65,9 @@ defmodule Core.AgentSession do
 
   @doc """
   Sends user text to the session and streams assistant events.
+
+  Blocks until the turn finishes. Returns `{:error, :turn_in_progress}` if a turn
+  is already active, and `{:error, :aborted}` if the turn is cancelled.
   """
   @spec send_message(pid(), String.t()) ::
           {:ok, %{message_id: String.t(), content: String.t()}} | {:error, term()}
@@ -58,10 +77,24 @@ defmodule Core.AgentSession do
 
   @doc """
   Returns the session transcript in chronological order.
+
+  Safe to call while a turn is active; returns the transcript as of turn start.
   """
   @spec messages(pid()) :: {:ok, [message()]}
   def messages(pid) when is_pid(pid) do
     GenServer.call(pid, :messages)
+  end
+
+  @doc """
+  Cancels the active turn and its in-flight tool tasks.
+
+  Returns `:ok` when a turn was cancelled and `{:error, :no_active_turn}` when
+  the session is idle. The waiting `send_message/2` caller receives
+  `{:error, :aborted}`.
+  """
+  @spec abort(pid()) :: :ok | {:error, :no_active_turn}
+  def abort(pid) when is_pid(pid) do
+    GenServer.call(pid, :abort)
   end
 
   @doc """
@@ -85,7 +118,11 @@ defmodule Core.AgentSession do
       tools: Keyword.get_lazy(opts, :tools, &Core.ToolRegistry.default_tools/0),
       workspace_root: Keyword.get_lazy(opts, :workspace_root, &File.cwd!/0),
       file_lock_manager: Keyword.get(opts, :file_lock_manager, Core.FileLockManager),
-      max_tool_iterations: max_tool_iterations(opts)
+      max_tool_iterations: max_tool_iterations(opts),
+      tool_timeout_ms: Keyword.get(opts, :tool_timeout_ms, @default_tool_timeout_ms),
+      batch_timeout_ms: Keyword.get(opts, :batch_timeout_ms, @default_batch_timeout_ms),
+      structural_backend:
+        Keyword.get(opts, :structural_backend, Core.Structural.Backend.Unavailable)
     }
 
     publish(Core.Event.session_started(%{session_id: state.session_id}))
@@ -94,24 +131,110 @@ defmodule Core.AgentSession do
   end
 
   @impl true
-  def handle_call({:send_message, text}, _from, state) do
+  def handle_call({:send_message, text}, from, %{active_turn: nil} = state) do
     context = new_turn_context(text)
-    messages = [context.user_message | state.messages]
+    state = %{state | messages: [context.user_message | state.messages]}
 
     publish_turn_started(state.session_id, context)
 
-    messages
-    |> Enum.reverse()
-    |> run_model_loop(state, context, 0, context.assistant_message_id)
-    |> handle_loop_result(state, context)
+    task =
+      Task.Supervisor.async_nolink(Core.TurnTaskSupervisor, fn ->
+        Core.TurnRunner.run(turn_spec(state, context))
+      end)
+
+    {:noreply, %{state | active_turn: %{task: task, from: from, turn_id: context.turn_id}}}
+  end
+
+  def handle_call({:send_message, _text}, _from, state) do
+    {:reply, {:error, :turn_in_progress}, state}
   end
 
   def handle_call(:messages, _from, state) do
     {:reply, {:ok, Enum.reverse(state.messages)}, state}
   end
 
+  def handle_call(:abort, _from, %{active_turn: nil} = state) do
+    {:reply, {:error, :no_active_turn}, state}
+  end
+
+  def handle_call(:abort, _from, %{active_turn: turn} = state) do
+    Task.Supervisor.terminate_child(Core.TurnTaskSupervisor, turn.task.pid)
+    Process.demonitor(turn.task.ref, [:flush])
+
+    publish(Core.Event.error(:session, :aborted))
+    publish_turn_finished(turn.turn_id, :cancelled)
+    publish(Core.Event.agent_finished(state.session_id))
+    GenServer.reply(turn.from, {:error, :aborted})
+
+    {:reply, :ok, %{state | active_turn: nil}}
+  end
+
   def handle_call({:configure_model, opts}, _from, state) do
     {:reply, :ok, configure_state(state, opts)}
+  end
+
+  @impl true
+  def handle_info({ref, outcome}, state) when is_reference(ref) do
+    case state.active_turn do
+      %{task: %{ref: ^ref}} ->
+        Process.demonitor(ref, [:flush])
+        {:noreply, finish_turn(outcome, state)}
+
+      _other ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) when is_reference(ref) do
+    case state.active_turn do
+      %{task: %{ref: ^ref}} ->
+        outcome = {:error, {:turn_crashed, reason}, Enum.reverse(state.messages)}
+        {:noreply, finish_turn(outcome, state)}
+
+      _other ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info(_message, state), do: {:noreply, state}
+
+  @spec turn_spec(%__MODULE__{}, turn_context()) :: Core.TurnRunner.spec()
+  defp turn_spec(state, context) do
+    %{
+      session_id: state.session_id,
+      turn_id: context.turn_id,
+      assistant_message_id: context.assistant_message_id,
+      messages: Enum.reverse(state.messages),
+      model_client: state.model_client,
+      model_opts: state.model_opts,
+      tools: state.tools,
+      workspace_root: state.workspace_root,
+      permission_mode: state.permission_mode,
+      file_lock_manager: state.file_lock_manager,
+      max_tool_iterations: state.max_tool_iterations,
+      tool_timeout_ms: state.tool_timeout_ms,
+      batch_timeout_ms: state.batch_timeout_ms,
+      structural_backend: state.structural_backend
+    }
+  end
+
+  defp finish_turn({:ok, reply, messages}, state) do
+    turn = state.active_turn
+    publish_turn_finished(turn.turn_id, :ok)
+    publish(Core.Event.agent_finished(state.session_id))
+    GenServer.reply(turn.from, {:ok, reply})
+
+    %{state | messages: Enum.reverse(messages), active_turn: nil}
+  end
+
+  defp finish_turn({:error, reason, messages}, state) do
+    turn = state.active_turn
+    publish(Core.Event.error(:model, reason))
+    publish_turn_finished(turn.turn_id, {:error, reason})
+    publish(Core.Event.agent_finished(state.session_id))
+    GenServer.reply(turn.from, {:error, reason})
+
+    %{state | messages: Enum.reverse(messages), active_turn: nil}
   end
 
   @spec new_turn_context(String.t()) :: turn_context()
@@ -131,133 +254,6 @@ defmodule Core.AgentSession do
     publish_message_finished(context.user_message_id, context.user_message)
   end
 
-  defp run_model_loop(messages, state, context, tool_iterations, assistant_message_id) do
-    publish(Core.Event.message_started(assistant_message_id, :assistant))
-
-    state
-    |> stream_chat(messages, assistant_message_id)
-    |> normalize_model_response()
-    |> continue_model_loop(messages, state, context, tool_iterations, assistant_message_id)
-  end
-
-  defp stream_chat(state, messages, assistant_message_id) do
-    state.model_client.stream_chat(
-      messages,
-      Core.ToolRegistry.schemas(state.tools),
-      Keyword.put_new(state.model_opts, :session_id, state.session_id),
-      message_delta_sink(assistant_message_id)
-    )
-  rescue
-    exception ->
-      {:error, {:model_client_exception, exception.__struct__, Exception.message(exception)}}
-  catch
-    :exit, reason ->
-      {:error, {:model_client_exit, reason}}
-
-    kind, reason ->
-      {:error, {:model_client_throw, kind, reason}}
-  end
-
-  defp message_delta_sink(message_id) do
-    fn delta -> publish(Core.Event.message_delta(message_id, delta)) end
-  end
-
-  defp normalize_model_response({:ok, content}) when is_binary(content) do
-    {:ok, %{content: content, tool_calls: []}}
-  end
-
-  defp normalize_model_response({:ok, response}) when is_map(response) do
-    content = response_content(response)
-    tool_calls = Map.get(response, :tool_calls, Map.get(response, "tool_calls", []))
-
-    with {:ok, calls} <- Core.ToolCall.normalize_all(tool_calls) do
-      {:ok, %{content: content, tool_calls: calls}}
-    end
-  end
-
-  defp normalize_model_response({:error, reason}), do: {:error, reason}
-  defp normalize_model_response(response), do: {:error, {:invalid_model_response, response}}
-
-  defp response_content(%{content: content}) when is_binary(content), do: content
-  defp response_content(%{"content" => content}) when is_binary(content), do: content
-  defp response_content(_response), do: ""
-
-  defp continue_model_loop(
-         {:ok, %{content: content, tool_calls: []}},
-         messages,
-         _state,
-         _context,
-         _tool_iterations,
-         assistant_message_id
-       ) do
-    assistant_message = %{role: :assistant, content: content}
-
-    publish_message_finished(assistant_message_id, assistant_message)
-
-    {:ok, %{message_id: assistant_message_id, content: content}, messages ++ [assistant_message]}
-  end
-
-  defp continue_model_loop(
-         {:ok, %{content: content, tool_calls: tool_calls}},
-         messages,
-         state,
-         context,
-         tool_iterations,
-         assistant_message_id
-       ) do
-    assistant_message = assistant_message(content, tool_calls)
-    publish_message_finished(assistant_message_id, assistant_message)
-
-    continue_after_tool_request(
-      messages,
-      assistant_message,
-      tool_calls,
-      state,
-      context,
-      tool_iterations
-    )
-  end
-
-  defp continue_model_loop(
-         {:error, reason},
-         messages,
-         _state,
-         _context,
-         _tool_iterations,
-         _assistant_message_id
-       ) do
-    {:error, reason, messages}
-  end
-
-  defp assistant_message("", tool_calls),
-    do: %{role: :assistant, content: "", tool_calls: tool_calls}
-
-  defp assistant_message(content, tool_calls) do
-    %{role: :assistant, content: content, tool_calls: tool_calls}
-  end
-
-  defp continue_after_tool_request(
-         messages,
-         assistant_message,
-         tool_calls,
-         state,
-         context,
-         tool_iterations
-       ) do
-    if tool_limit_reached?(tool_iterations, state.max_tool_iterations) do
-      {:error, {:max_tool_iterations_exceeded, state.max_tool_iterations},
-       messages ++ [assistant_message]}
-    else
-      tool_messages = run_tool_calls(tool_calls, state)
-      next_messages = messages ++ [assistant_message | tool_messages]
-
-      run_model_loop(next_messages, state, context, tool_iterations + 1, new_message_id())
-    end
-  end
-
-  defp tool_limit_reached?(_tool_iterations, :infinity), do: false
-  defp tool_limit_reached?(tool_iterations, max) when is_integer(max), do: tool_iterations >= max
-
   defp max_tool_iterations(opts) do
     case Keyword.get(opts, :max_tool_iterations, :infinity) do
       nil -> :infinity
@@ -265,75 +261,6 @@ defmodule Core.AgentSession do
       max when is_integer(max) and max >= 0 -> max
       max -> raise ArgumentError, "invalid :max_tool_iterations #{inspect(max)}"
     end
-  end
-
-  defp run_tool_calls(tool_calls, state) do
-    Enum.map(tool_calls, &run_tool_call(&1, state))
-  end
-
-  defp run_tool_call(tool_call, state) do
-    result =
-      Core.ToolExecutor.run(tool_call.name, tool_call.args,
-        tool_call_id: tool_call.id,
-        tools: state.tools,
-        workspace_root: state.workspace_root,
-        permission_mode: state.permission_mode,
-        file_lock_manager: state.file_lock_manager
-      )
-
-    tool_message = tool_result_message(tool_call, result)
-    tool_message_id = new_message_id()
-
-    publish(Core.Event.message_started(tool_message_id, :tool))
-    publish_message_finished(tool_message_id, tool_message)
-    tool_message
-  end
-
-  defp tool_result_message(tool_call, {:ok, result}) do
-    %{
-      role: :tool,
-      tool_call_id: tool_call.id,
-      name: tool_call.name,
-      status: :ok,
-      content: tool_content(result),
-      summary: Map.get(result, :summary, "completed")
-    }
-  end
-
-  defp tool_result_message(tool_call, {:error, reason}) do
-    summary = inspect(reason, charlists: :as_lists)
-
-    %{
-      role: :tool,
-      tool_call_id: tool_call.id,
-      name: tool_call.name,
-      status: :error,
-      content: summary,
-      summary: summary
-    }
-  end
-
-  defp tool_content(%{output: output}) when is_binary(output), do: output
-  defp tool_content(%{summary: summary}) when is_binary(summary), do: summary
-  defp tool_content(result), do: inspect(result, charlists: :as_lists)
-
-  defp handle_loop_result({:ok, reply, messages}, state, context) do
-    publish_turn_finished(context.turn_id, :ok)
-    publish(Core.Event.agent_finished(state.session_id))
-
-    {:reply, {:ok, reply}, %{state | messages: Enum.reverse(messages)}}
-  end
-
-  defp handle_loop_result({:error, reason, messages}, state, context) do
-    publish(Core.Event.error(:model, reason))
-    publish_turn_finished(context.turn_id, {:error, reason})
-    publish(Core.Event.agent_finished(state.session_id))
-
-    {:reply, {:error, reason}, %{state | messages: Enum.reverse(messages)}}
-  end
-
-  defp publish_message_finished(message_id, message) do
-    publish(Core.Event.message_finished(Map.put(message, :id, message_id)))
   end
 
   defp configure_state(state, opts) do
@@ -350,8 +277,16 @@ defmodule Core.AgentSession do
     publish(Core.Event.turn_finished(turn_id, %{status: :ok}))
   end
 
+  defp publish_turn_finished(turn_id, :cancelled) do
+    publish(Core.Event.turn_finished(turn_id, %{status: :cancelled}))
+  end
+
   defp publish_turn_finished(turn_id, {:error, reason}) do
     publish(Core.Event.turn_finished(turn_id, %{status: :error, reason: reason}))
+  end
+
+  defp publish_message_finished(message_id, message) do
+    publish(Core.Event.message_finished(Map.put(message, :id, message_id)))
   end
 
   defp publish(event) do

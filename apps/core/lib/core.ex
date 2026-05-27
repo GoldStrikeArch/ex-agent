@@ -41,6 +41,14 @@ defmodule Core do
   end
 
   @doc """
+  Cancels the active turn of a session, keeping the session alive.
+  """
+  @spec abort(pid()) :: :ok | {:error, :no_active_turn}
+  def abort(pid) when is_pid(pid) do
+    Core.AgentSession.abort(pid)
+  end
+
+  @doc """
   Reconfigures a live session model client for subsequent turns.
   """
   @spec configure_model(pid(), keyword()) :: :ok | {:error, term()}

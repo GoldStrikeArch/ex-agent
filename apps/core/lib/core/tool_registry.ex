@@ -14,7 +14,16 @@ defmodule Core.ToolRegistry do
     Core.Tools.Grep,
     Core.Tools.Shell,
     Core.Tools.WriteFile,
-    Core.Tools.EditFile
+    Core.Tools.EditFile,
+    Core.Tools.Batch,
+    Core.Tools.Structural.IndexRepo,
+    Core.Tools.Structural.IndexStatus,
+    Core.Tools.Structural.AstOutline,
+    Core.Tools.Structural.SymbolSearch,
+    Core.Tools.Structural.AstQuery,
+    Core.Tools.Structural.FetchNode,
+    Core.Tools.Structural.Definitions,
+    Core.Tools.Structural.Callers
   ]
 
   @doc """

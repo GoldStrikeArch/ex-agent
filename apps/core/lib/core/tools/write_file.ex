@@ -9,6 +9,8 @@ defmodule Core.Tools.WriteFile do
   alias Core.Tools.Args
   alias Core.Tools.PathSafety
 
+  @lock_wait_ms 30_000
+
   @impl true
   def name, do: "write_file"
 
@@ -40,7 +42,8 @@ defmodule Core.Tools.WriteFile do
       path.absolute
       |> FileLockManager.with_lock(
         fn -> write(path, content, create_dirs) end,
-        lock_manager(context)
+        manager: lock_manager(context),
+        wait_ms: @lock_wait_ms
       )
       |> unwrap_lock()
     end

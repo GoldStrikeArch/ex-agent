@@ -9,6 +9,8 @@ defmodule Core.Tools.EditFile do
   alias Core.Tools.Args
   alias Core.Tools.PathSafety
 
+  @lock_wait_ms 30_000
+
   @impl true
   def name, do: "edit_file"
 
@@ -44,7 +46,8 @@ defmodule Core.Tools.EditFile do
       path.absolute
       |> FileLockManager.with_lock(
         fn -> edit(path, search, replace, occurrence, expected) end,
-        lock_manager(context)
+        manager: lock_manager(context),
+        wait_ms: @lock_wait_ms
       )
       |> unwrap_lock()
     end

@@ -90,7 +90,12 @@ defmodule Core.ToolExecutor do
     %{
       workspace_root: Keyword.get_lazy(opts, :workspace_root, &File.cwd!/0),
       permission_mode: Keyword.get(opts, :permission_mode, :read_only),
-      file_lock_manager: Keyword.get(opts, :file_lock_manager, Core.FileLockManager)
+      file_lock_manager: Keyword.get(opts, :file_lock_manager, Core.FileLockManager),
+      tools: Keyword.get(opts, :tools, Core.ToolRegistry.default_tools()),
+      structural_backend:
+        Keyword.get(opts, :structural_backend, Core.Structural.Backend.Unavailable),
+      tool_timeout_ms: Keyword.get(opts, :tool_timeout_ms),
+      batch_timeout_ms: Keyword.get(opts, :batch_timeout_ms)
     }
   end
 
