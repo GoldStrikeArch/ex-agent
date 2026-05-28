@@ -1,9 +1,6 @@
 defmodule Core.Tools.Structural.AstQuery do
   @moduledoc """
-  Runs a structural query against parsed syntax trees.
-
-  Stub tool: returns a `:backend_unavailable` result until a real structural
-  backend is wired up.
+  Runs a compact structural query against the parsed index.
   """
 
   @behaviour Core.Tool
@@ -24,7 +21,8 @@ defmodule Core.Tools.Structural.AstQuery do
       required: ["query"],
       properties: %{
         query: %{type: "string"},
-        path: %{type: "string"}
+        path: %{type: "string"},
+        limit: %{type: "integer", default: 100}
       }
     }
   end
@@ -34,9 +32,10 @@ defmodule Core.Tools.Structural.AstQuery do
 
   @impl true
   def run(args, context) do
-    with {:ok, query} <- Args.fetch_string(args, :query) do
-      params = %{query: query, path: Args.get(args, :path)}
-      Structural.dispatch(:ast_query, params, context, %{query: query})
+    with {:ok, query} <- Args.fetch_string(args, :query),
+         {:ok, limit} <- Args.optional_integer(args, :limit, 1, 1000) do
+      params = %{query: query, path: Args.get(args, :path), limit: limit}
+      Structural.dispatch(:ast_query, params, context, Map.take(params, [:query, :path, :limit]))
     end
   end
 end

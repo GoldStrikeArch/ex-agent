@@ -4,9 +4,12 @@ defmodule Core.StructuralTest do
   @structural_tools [
     Core.Tools.Structural.IndexRepo,
     Core.Tools.Structural.IndexStatus,
+    Core.Tools.Structural.IndexedFiles,
+    Core.Tools.Structural.IndexedOutline,
     Core.Tools.Structural.AstOutline,
     Core.Tools.Structural.SymbolSearch,
     Core.Tools.Structural.AstQuery,
+    Core.Tools.Structural.ReadIndexedFile,
     Core.Tools.Structural.FetchNode,
     Core.Tools.Structural.Definitions,
     Core.Tools.Structural.Callers
@@ -15,19 +18,25 @@ defmodule Core.StructuralTest do
   @stub_calls [
     {"index_repo", %{}},
     {"index_status", %{}},
+    {"indexed_files", %{"path" => "lib"}},
+    {"indexed_outline", %{"path" => "lib"}},
     {"ast_outline", %{"path" => "lib/foo.ex"}},
     {"symbol_search", %{"query" => "Foo"}},
-    {"ast_query", %{"query" => "(call)"}},
+    {"ast_query", %{"query" => "defmodule", "path" => "lib"}},
+    {"read_indexed_file", %{"path" => "lib/foo.ex"}},
     {"fetch_node", %{"symbol_id" => "sym-1"}},
     {"definitions", %{"symbol" => "Foo.bar"}},
     {"callers", %{"symbol" => "Foo.bar"}}
   ]
 
-  test "structural tools are in the default registry with schemas" do
+  test "structural tools are available and are the agent defaults" do
     defaults = Core.ToolRegistry.default_tools()
-    assert Enum.all?(@structural_tools, &(&1 in defaults))
+    agent_defaults = Core.ToolRegistry.agent_default_tools()
 
-    names = Core.ToolRegistry.schemas() |> Enum.map(& &1.name)
+    assert Enum.all?(@structural_tools, &(&1 in defaults))
+    assert agent_defaults == @structural_tools
+
+    names = agent_defaults |> Core.ToolRegistry.schemas() |> Enum.map(& &1.name)
 
     for tool <- @structural_tools do
       assert tool.name() in names
@@ -43,7 +52,7 @@ defmodule Core.StructuralTest do
       assert result.operation == name
       assert result.available == false
       assert is_binary(result.summary)
-      assert result.output =~ "grep"
+      assert result.output =~ "structural backend unavailable"
     end
   end
 
@@ -61,6 +70,9 @@ defmodule Core.StructuralTest do
 
     assert {:error, {:invalid_argument, :symbol, _}} =
              Core.run_tool("definitions", %{}, permission_mode: :read_only)
+
+    assert {:error, {:invalid_argument, :path, _}} =
+             Core.run_tool("read_indexed_file", %{}, permission_mode: :read_only)
   end
 
   test "a configured backend is used over the default unavailable one" do

@@ -16,7 +16,7 @@ defmodule Core.Tools.Structural.SymbolSearch do
 
   @impl true
   def description,
-    do: "Locate module, function, or class definitions by name across the workspace."
+    do: "Locate module, function, or class definitions by name, optionally scoped to a path."
 
   @impl true
   def schema do
@@ -25,7 +25,9 @@ defmodule Core.Tools.Structural.SymbolSearch do
       required: ["query"],
       properties: %{
         query: %{type: "string"},
-        kind: %{type: "string"}
+        kind: %{type: "string"},
+        path: %{type: "string"},
+        limit: %{type: "integer", default: 50}
       }
     }
   end
@@ -35,9 +37,21 @@ defmodule Core.Tools.Structural.SymbolSearch do
 
   @impl true
   def run(args, context) do
-    with {:ok, query} <- Args.fetch_string(args, :query) do
-      params = %{query: query, kind: Args.get(args, :kind)}
-      Structural.dispatch(:symbol_search, params, context, %{query: query})
+    with {:ok, query} <- Args.fetch_string(args, :query),
+         {:ok, limit} <- Args.optional_integer(args, :limit, 1, 1000) do
+      params = %{
+        query: query,
+        kind: Args.get(args, :kind),
+        path: Args.get(args, :path),
+        limit: limit
+      }
+
+      Structural.dispatch(
+        :symbol_search,
+        params,
+        context,
+        Map.take(params, [:query, :path, :limit])
+      )
     end
   end
 end

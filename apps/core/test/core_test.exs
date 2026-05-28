@@ -66,6 +66,9 @@ defmodule CoreTest do
 
     assert request.tool_count > 0
 
+    assert Enum.map(request.tools, & &1.name) ==
+             Enum.map(Core.ToolRegistry.structural_tools(), & &1.name())
+
     assert_receive {:core_event,
                     {:model_response, ^model_call_id,
                      %{
@@ -106,7 +109,11 @@ defmodule CoreTest do
     ]
 
     assert {:ok, session} =
-             Core.start_session(workspace_root: workspace, model_opts: [script: script])
+             Core.start_session(
+               workspace_root: workspace,
+               tools: Core.ToolRegistry.default_tools(),
+               model_opts: [script: script]
+             )
 
     assert {:ok, %{message_id: final_message_id, content: content}} =
              Core.send_message(session, "read mix")
@@ -202,7 +209,11 @@ defmodule CoreTest do
       end)
 
     assert {:ok, session} =
-             Core.start_session(workspace_root: workspace, model_opts: [script: script])
+             Core.start_session(
+               workspace_root: workspace,
+               tools: Core.ToolRegistry.default_tools(),
+               model_opts: [script: script]
+             )
 
     assert {:ok, %{content: content}} = Core.send_message(session, "read repeatedly")
     assert content =~ "Mock response after tool: defmodule ManyTools"
@@ -233,6 +244,7 @@ defmodule CoreTest do
     assert {:ok, session} =
              Core.start_session(
                workspace_root: workspace,
+               tools: Core.ToolRegistry.default_tools(),
                max_tool_iterations: 1,
                model_opts: [script: script]
              )

@@ -22,13 +22,13 @@ defmodule AgentApp.ModelCatalog do
   @auth_context_keys [:agent_dir, :path, :token_transport, :token_url]
   @default_instructions """
   You are a coding agent running in a local workspace.
-  Inspect before editing.
+  This experimental build exposes only structural code-intelligence tools.
 
-  Parallelize independent tool calls. Whenever you need more than one read_file, grep, list_files, ast_outline, symbol_search, or fetch_node, emit them as sibling tool calls in the same assistant response, or call the `batch` tool with the full list of calls. Do not request files one at a time across multiple turns — sequential single reads are wasteful and substantially slow the agent.
+  Start with index_status. If the index is empty or stale, run index_repo once before code navigation. Use indexed_outline for a recursive path-scoped map, indexed_files only when you need file paths, read_indexed_file when the user asks to read whole files, ast_outline for one known file, symbol_search and definitions with the path argument to find declarations, callers with the path argument to inspect references, ast_query for compact structural patterns, and fetch_node with exact id values returned by structural tools for focused source slices.
 
-  Prefer structural tools for navigation when available: symbol_search to find definitions, ast_outline before reading large files, fetch_node to inspect exact definitions. If structural results report the index is empty, run index_repo once to build it; if they report the backend is unavailable, fall back to grep and read_file.
+  Parallelize independent structural lookups. Whenever you need more than one read_indexed_file, symbol_search, definitions, callers, ast_outline, ast_query, or fetch_node call, emit them as sibling tool calls in the same assistant response. Prefer one indexed_outline call over many ast_outline calls when exploring a directory. Do not request structural lookups one at a time across multiple turns when they are independent.
 
-  Use shell commands only when they directly help the task. After edits, run focused validation when possible. Keep responses concise and grounded in observed files and command output.
+  Do not invent symbol ids. Use the id= values returned by symbol_search, definitions, indexed_outline, ast_query, and ast_outline. Do not ask for shell, grep, list_files, read_file, edit_file, write_file, or batch; they are intentionally unavailable in this structural-only experiment. Because mutating tools are hidden, explain required code changes instead of attempting edits. Keep responses concise and grounded in structural results.
   """
 
   @doc """

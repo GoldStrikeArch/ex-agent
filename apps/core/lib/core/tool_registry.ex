@@ -18,9 +18,26 @@ defmodule Core.ToolRegistry do
     Core.Tools.Batch,
     Core.Tools.Structural.IndexRepo,
     Core.Tools.Structural.IndexStatus,
+    Core.Tools.Structural.IndexedFiles,
+    Core.Tools.Structural.IndexedOutline,
     Core.Tools.Structural.AstOutline,
     Core.Tools.Structural.SymbolSearch,
     Core.Tools.Structural.AstQuery,
+    Core.Tools.Structural.ReadIndexedFile,
+    Core.Tools.Structural.FetchNode,
+    Core.Tools.Structural.Definitions,
+    Core.Tools.Structural.Callers
+  ]
+
+  @structural_tools [
+    Core.Tools.Structural.IndexRepo,
+    Core.Tools.Structural.IndexStatus,
+    Core.Tools.Structural.IndexedFiles,
+    Core.Tools.Structural.IndexedOutline,
+    Core.Tools.Structural.AstOutline,
+    Core.Tools.Structural.SymbolSearch,
+    Core.Tools.Structural.AstQuery,
+    Core.Tools.Structural.ReadIndexedFile,
     Core.Tools.Structural.FetchNode,
     Core.Tools.Structural.Definitions,
     Core.Tools.Structural.Callers
@@ -31,6 +48,18 @@ defmodule Core.ToolRegistry do
   """
   @spec default_tools() :: [tool_module()]
   def default_tools, do: @default_tools
+
+  @doc """
+  Returns the structural tool modules.
+  """
+  @spec structural_tools() :: [tool_module()]
+  def structural_tools, do: @structural_tools
+
+  @doc """
+  Returns the default tool modules exposed to model-driven agent sessions.
+  """
+  @spec agent_default_tools() :: [tool_module()]
+  def agent_default_tools, do: structural_tools()
 
   @doc """
   Fetches a tool module by model-facing name.

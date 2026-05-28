@@ -115,7 +115,7 @@ defmodule Core.AgentSession do
       model_client: Keyword.get(opts, :model_client, Mock),
       model_opts: Keyword.get(opts, :model_opts, []),
       permission_mode: Keyword.get(opts, :permission_mode, :read_only),
-      tools: Keyword.get_lazy(opts, :tools, &Core.ToolRegistry.default_tools/0),
+      tools: Keyword.get_lazy(opts, :tools, &Core.ToolRegistry.agent_default_tools/0),
       workspace_root: Keyword.get_lazy(opts, :workspace_root, &File.cwd!/0),
       file_lock_manager: Keyword.get(opts, :file_lock_manager, Core.FileLockManager),
       max_tool_iterations: max_tool_iterations(opts),

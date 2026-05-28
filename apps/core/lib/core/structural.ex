@@ -5,13 +5,13 @@ defmodule Core.Structural do
   Tools validate their own arguments, then dispatch a normalized operation
   through this module. When the configured backend is unavailable, dispatch
   returns a successful `:backend_unavailable` tool result with stable keys so
-  the model can fall back to grep/read_file without seeing a tool error.
+  the model sees a structured capability failure instead of a tool error.
   """
 
   alias Core.Structural.Backend
   alias Core.Structural.Backend.Unavailable
 
-  @fallback "structural backend unavailable; use grep and read_file instead"
+  @fallback "structural backend unavailable"
 
   @doc """
   Returns the structural backend module from the tool context.

@@ -17,8 +17,13 @@ defmodule Structural.Index do
 
   ## Query API
 
+    * `files/2` - indexed files, optionally scoped to a file or directory path.
+    * `outlines/2` - indexed files with their symbols in source order.
     * `outline/2` - symbols in one file, in source order.
     * `search/3` - symbols by name (exact or arity-qualified), optional kind.
+    * `symbols/2` - symbols by structural filters such as path and kind.
+    * `calls/2` - call sites by optional path and callee filters.
+    * `fetch_file/2` - a full indexed file, hash checked like `fetch/2`.
     * `fetch/2` - a symbol's exact current source slice, or `{:error, :stale}`
       when the file changed since indexing.
     * `status/1` - index coverage counts.
@@ -74,6 +79,25 @@ defmodule Structural.Index do
   end
 
   @doc """
+  Lists indexed source files. Options: `:path`, `:limit` (default 200).
+  """
+  @spec files(GenServer.server(), keyword()) :: {:ok, [map()]}
+  def files(server \\ __MODULE__, opts \\ []) do
+    GenServer.call(server, {:files, opts})
+  end
+
+  @doc """
+  Lists indexed source files with their symbols.
+
+  Options: `:path`, `:limit` (default 200), `:symbol_limit_per_file`
+  (default 200).
+  """
+  @spec outlines(GenServer.server(), keyword()) :: {:ok, [map()]}
+  def outlines(server \\ __MODULE__, opts \\ []) do
+    GenServer.call(server, {:outlines, opts})
+  end
+
+  @doc """
   Returns the symbols in `path` (relative to the indexed root), in source order.
   """
   @spec outline(GenServer.server(), Path.t()) :: {:ok, [symbol()]}
@@ -87,6 +111,35 @@ defmodule Structural.Index do
   @spec search(GenServer.server(), String.t(), keyword()) :: {:ok, [symbol()]}
   def search(server \\ __MODULE__, name, opts \\ []) do
     GenServer.call(server, {:search, name, opts})
+  end
+
+  @doc """
+  Lists symbols by structural filters.
+
+  Options: `:path`, `:kind`, `:kinds`, `:limit` (default 100).
+  """
+  @spec symbols(GenServer.server(), keyword()) :: {:ok, [symbol()]}
+  def symbols(server \\ __MODULE__, opts \\ []) do
+    GenServer.call(server, {:symbols, opts})
+  end
+
+  @doc """
+  Lists call sites by structural filters.
+
+  Options: `:path`, `:callee`, `:limit` (default 100).
+  """
+  @spec calls(GenServer.server(), keyword()) :: {:ok, [map()]}
+  def calls(server \\ __MODULE__, opts \\ []) do
+    GenServer.call(server, {:calls, opts})
+  end
+
+  @doc """
+  Fetches a full indexed source file, verifying the file hash.
+  """
+  @spec fetch_file(GenServer.server(), Path.t()) ::
+          {:ok, map()} | {:error, :not_found | :stale | :no_root | term()}
+  def fetch_file(server \\ __MODULE__, path) do
+    GenServer.call(server, {:fetch_file, path})
   end
 
   @doc """
@@ -129,12 +182,32 @@ defmodule Structural.Index do
     {:reply, {:ok, counts}, %{state | root: root}}
   end
 
+  def handle_call({:files, opts}, _from, state) do
+    {:reply, {:ok, select_files(state.conn, opts)}, state}
+  end
+
+  def handle_call({:outlines, opts}, _from, state) do
+    {:reply, {:ok, select_outlines(state.conn, opts)}, state}
+  end
+
   def handle_call({:outline, path}, _from, state) do
     {:reply, {:ok, select_outline(state.conn, path)}, state}
   end
 
   def handle_call({:search, name, opts}, _from, state) do
     {:reply, {:ok, select_search(state.conn, name, opts)}, state}
+  end
+
+  def handle_call({:symbols, opts}, _from, state) do
+    {:reply, {:ok, select_symbols(state.conn, opts)}, state}
+  end
+
+  def handle_call({:calls, opts}, _from, state) do
+    {:reply, {:ok, select_calls(state.conn, opts)}, state}
+  end
+
+  def handle_call({:fetch_file, path}, _from, state) do
+    {:reply, fetch_indexed_file(state, path), state}
   end
 
   def handle_call({:fetch, symbol_id}, _from, state) do
@@ -351,7 +424,46 @@ defmodule Structural.Index do
 
   @symbol_columns "id, kind, name, start_line, end_line, start_byte, end_byte, parent_id, signature, preview"
 
+  defp select_files(conn, opts) do
+    limit = Keyword.get(opts, :limit) || 200
+    {path_clause, path_params} = path_filter(Keyword.get(opts, :path), "f")
+
+    conn
+    |> query(
+      """
+      SELECT f.path, f.language, COUNT(s.id)
+        FROM files f
+        LEFT JOIN symbols s ON s.file_id = f.id
+        WHERE 1 = 1#{path_clause}
+        GROUP BY f.id, f.path, f.language
+        ORDER BY f.path
+        LIMIT ?
+      """,
+      path_params ++ [limit]
+    )
+    |> Enum.map(fn [path, language, symbol_count] ->
+      %{path: path, language: language, symbol_count: symbol_count}
+    end)
+  end
+
+  defp select_outlines(conn, opts) do
+    symbol_limit = Keyword.get(opts, :symbol_limit_per_file) || 200
+
+    conn
+    |> select_files(opts)
+    |> Enum.map(fn file ->
+      symbols =
+        conn
+        |> select_outline(file.path)
+        |> Enum.take(symbol_limit)
+
+      Map.put(file, :symbols, symbols)
+    end)
+  end
+
   defp select_outline(conn, path) do
+    path = normalize_index_path(path)
+
     conn
     |> query(
       """
@@ -365,28 +477,71 @@ defmodule Structural.Index do
   end
 
   defp select_search(conn, name, opts) do
-    limit = Keyword.get(opts, :limit, 50)
-    {kind_clause, kind_params} = kind_filter(Keyword.get(opts, :kind))
+    limit = Keyword.get(opts, :limit) || 50
+    {kind_clause, kind_params} = kinds_filter(Keyword.get(opts, :kinds), Keyword.get(opts, :kind))
+    {path_clause, path_params} = path_filter(Keyword.get(opts, :path), "f")
 
     query(
       conn,
       """
       SELECT s.#{Enum.join(symbol_columns_list(), ", s.")}, f.path
         FROM symbols s JOIN files f ON f.id = s.file_id
-        WHERE (s.name = ? OR s.name LIKE ?)#{kind_clause}
+        WHERE (s.name = ? OR s.name LIKE ?)#{kind_clause}#{path_clause}
         ORDER BY f.path, s.start_byte
         LIMIT ?
       """,
-      [name, name <> "/%"] ++ kind_params ++ [limit]
+      [name, name <> "/%"] ++ kind_params ++ path_params ++ [limit]
     )
     |> Enum.map(&row_to_search_symbol/1)
   end
 
+  defp select_symbols(conn, opts) do
+    limit = Keyword.get(opts, :limit) || 100
+    {kind_clause, kind_params} = kinds_filter(Keyword.get(opts, :kinds), Keyword.get(opts, :kind))
+    {path_clause, path_params} = path_filter(Keyword.get(opts, :path), "f")
+
+    query(
+      conn,
+      """
+      SELECT s.#{Enum.join(symbol_columns_list(), ", s.")}, f.path
+        FROM symbols s JOIN files f ON f.id = s.file_id
+        WHERE 1 = 1#{kind_clause}#{path_clause}
+        ORDER BY f.path, s.start_byte
+        LIMIT ?
+      """,
+      kind_params ++ path_params ++ [limit]
+    )
+    |> Enum.map(&row_to_search_symbol/1)
+  end
+
+  defp kinds_filter(nil, kind), do: kind_filter(kind)
+  defp kinds_filter([], kind), do: kind_filter(kind)
+
+  defp kinds_filter(kinds, _kind) when is_list(kinds) do
+    normalized = kinds |> Enum.map(&to_string/1) |> Enum.reject(&(&1 == ""))
+
+    case normalized do
+      [] -> {"", []}
+      kinds -> {" AND s.kind IN (#{placeholders(kinds)})", kinds}
+    end
+  end
+
+  defp kinds_filter(_kinds, kind), do: kind_filter(kind)
+
   defp kind_filter(nil), do: {"", []}
+  defp kind_filter(""), do: {"", []}
   defp kind_filter(kind), do: {" AND s.kind = ?", [to_string(kind)]}
 
+  defp placeholders(values), do: values |> Enum.map(fn _value -> "?" end) |> Enum.join(", ")
+
   defp select_callers(conn, name, opts) do
-    limit = Keyword.get(opts, :limit, 50)
+    select_calls(conn, Keyword.put(opts, :callee, name))
+  end
+
+  defp select_calls(conn, opts) do
+    limit = Keyword.get(opts, :limit) || 100
+    {callee_clause, callee_params} = callee_filter(Keyword.get(opts, :callee))
+    {path_clause, path_params} = path_filter(Keyword.get(opts, :path), "f")
 
     conn
     |> query(
@@ -395,15 +550,72 @@ defmodule Structural.Index do
         FROM calls c
         JOIN files f ON f.id = c.file_id
         LEFT JOIN symbols s ON s.id = c.caller_symbol_id
-        WHERE c.callee_name = ?
+        WHERE 1 = 1#{callee_clause}#{path_clause}
         ORDER BY f.path, c.line
         LIMIT ?
       """,
-      [name, limit]
+      callee_params ++ path_params ++ [limit]
     )
     |> Enum.map(fn [path, line, callee, caller] ->
       %{path: path, line: line, callee: callee, caller: caller}
     end)
+  end
+
+  defp callee_filter(nil), do: {"", []}
+  defp callee_filter(""), do: {"", []}
+  defp callee_filter(callee), do: {" AND c.callee_name = ?", [to_string(callee)]}
+
+  defp path_filter(nil, _table_alias), do: {"", []}
+  defp path_filter("", _table_alias), do: {"", []}
+
+  defp path_filter(path, table_alias) do
+    normalized = normalize_index_path(path)
+
+    case normalized do
+      "" ->
+        {"", []}
+
+      path ->
+        {" AND (#{table_alias}.path = ? OR #{table_alias}.path LIKE ?)", [path, path <> "/%"]}
+    end
+  end
+
+  defp normalize_index_path(path) do
+    path
+    |> to_string()
+    |> String.trim_leading("./")
+    |> then(&if(&1 == ".", do: "", else: &1))
+    |> String.trim_trailing("/")
+  end
+
+  defp fetch_indexed_file(%{root: nil}, _path), do: {:error, :no_root}
+
+  defp fetch_indexed_file(%{conn: conn, root: root}, path) do
+    indexed_path = normalize_index_path(path)
+
+    case query(conn, "SELECT path, language, file_hash FROM files WHERE path = ?", [indexed_path]) do
+      [] -> {:error, :not_found}
+      [[path, language, stored_hash]] -> read_file(root, path, language, stored_hash)
+    end
+  end
+
+  defp read_file(root, path, language, stored_hash) do
+    abs = Path.join(root, path)
+
+    with {:ok, content} <- File.read(abs),
+         true <- sha256(content) == stored_hash do
+      {:ok,
+       %{
+         path: path,
+         language: language,
+         file_hash: stored_hash,
+         bytes: byte_size(content),
+         content: content
+       }}
+    else
+      false -> {:error, :stale}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp fetch_symbol(%{root: nil}, _symbol_id), do: {:error, :no_root}

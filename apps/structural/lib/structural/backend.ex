@@ -44,6 +44,39 @@ defmodule Structural.Backend do
     {:ok, status_result(status, summary)}
   end
 
+  defp execute(:indexed_files, args, _context, server) do
+    path = Map.get(args, :path)
+    limit = Map.get(args, :limit) || 200
+    {:ok, files} = Index.files(server, path: path, limit: limit)
+
+    {:ok,
+     %{
+       status: :ok,
+       path: path,
+       files: files,
+       output: render_files(files),
+       summary: "#{length(files)} indexed files#{path_summary(path)}"
+     }}
+  end
+
+  defp execute(:indexed_outline, args, _context, server) do
+    path = Map.get(args, :path)
+    limit = Map.get(args, :limit) || 200
+    symbol_limit = Map.get(args, :symbol_limit_per_file) || 200
+
+    {:ok, files} =
+      Index.outlines(server, path: path, limit: limit, symbol_limit_per_file: symbol_limit)
+
+    {:ok,
+     %{
+       status: :ok,
+       path: path,
+       files: files,
+       output: render_outlines(files),
+       summary: "#{length(files)} indexed outlines#{path_summary(path)}"
+     }}
+  end
+
   defp execute(:ast_outline, args, _context, server) do
     path = Map.fetch!(args, :path)
     {:ok, symbols} = Index.outline(server, path)
@@ -60,19 +93,21 @@ defmodule Structural.Backend do
 
   defp execute(:symbol_search, args, _context, server) do
     query = Map.fetch!(args, :query)
-    {:ok, matches} = Index.search(server, query, kind: Map.get(args, :kind))
+    opts = search_opts(args)
+    {:ok, matches} = Index.search(server, query, opts)
     {:ok, match_result(matches, "symbol_search #{query}")}
   end
 
   defp execute(:definitions, args, _context, server) do
     symbol = Map.fetch!(args, :symbol)
-    matches = search_candidates(server, symbol)
+    matches = search_candidates(server, symbol, search_opts(args))
     {:ok, match_result(matches, "definitions of #{symbol}")}
   end
 
   defp execute(:callers, args, _context, server) do
     symbol = Map.fetch!(args, :symbol)
-    {:ok, callers} = Index.callers(server, callee_name(symbol))
+    opts = args |> Map.take([:path, :limit]) |> Enum.reject(&blank_value?/1)
+    {:ok, callers} = Index.callers(server, callee_name(symbol), opts)
 
     {:ok,
      %{
@@ -89,7 +124,43 @@ defmodule Structural.Backend do
     {:ok, fetch_result(Index.fetch(server, symbol_id), symbol_id)}
   end
 
-  defp execute(:ast_query, _args, _context, _server), do: {:error, :unsupported_query}
+  defp execute(:read_indexed_file, args, _context, server) do
+    path = Map.fetch!(args, :path)
+    max_bytes = Map.get(args, :max_bytes) || 50_000
+    {:ok, indexed_file_result(Index.fetch_file(server, path), path, max_bytes)}
+  end
+
+  defp execute(:ast_query, args, _context, server) do
+    query = Map.fetch!(args, :query)
+    opts = args |> Map.take([:path, :limit]) |> Enum.reject(&blank_value?/1)
+
+    case ast_query_plan(query) do
+      {:files, label} ->
+        {:ok, files} = Index.files(server, opts)
+        {:ok, ast_query_result(:files, label, files, render_files(files))}
+
+      {:symbols, label, symbol_opts} ->
+        {:ok, symbols} = Index.symbols(server, opts ++ symbol_opts)
+        {:ok, ast_query_result(:symbols, label, symbols, render_matches(symbols))}
+
+      {:search, label, name} ->
+        {:ok, symbols} = Index.search(server, name, opts)
+        {:ok, ast_query_result(:symbols, label, symbols, render_matches(symbols))}
+
+      {:calls, label, call_opts} ->
+        {:ok, calls} = Index.calls(server, opts ++ call_opts)
+        {:ok, ast_query_result(:calls, label, calls, render_callers(calls))}
+
+      {:unsupported, label} ->
+        {:ok,
+         %{
+           status: :unsupported_query,
+           query: query,
+           output: unsupported_query_message(label),
+           summary: unsupported_query_message(label)
+         }}
+    end
+  end
 
   # --- result shaping ---
 
@@ -148,16 +219,96 @@ defmodule Structural.Backend do
   defp fetch_error_message(:not_found, symbol_id), do: "no node found for #{symbol_id}"
   defp fetch_error_message(reason, symbol_id), do: "cannot fetch #{symbol_id}: #{inspect(reason)}"
 
-  defp render_symbols(symbols) do
-    Enum.map_join(symbols, "\n", fn symbol ->
-      "#{symbol.kind} #{symbol.name} (lines #{symbol.start_line}-#{symbol.end_line})"
+  defp indexed_file_result({:ok, file}, _path, max_bytes) do
+    {output, truncated} = truncate_content(file.content, max_bytes)
+
+    %{
+      status: :ok,
+      path: file.path,
+      language: file.language,
+      file_hash: file.file_hash,
+      bytes: file.bytes,
+      truncated: truncated,
+      content: output,
+      output: output,
+      summary: read_file_summary(file.path, file.bytes, truncated)
+    }
+  end
+
+  defp indexed_file_result({:error, reason}, path, _max_bytes) do
+    %{
+      status: reason,
+      path: path,
+      output: indexed_file_error_message(reason, path),
+      summary: indexed_file_error_message(reason, path)
+    }
+  end
+
+  defp indexed_file_error_message(:stale, path),
+    do: "indexed file #{path} is stale; re-run index_repo"
+
+  defp indexed_file_error_message(:not_found, path), do: "indexed file not found for #{path}"
+
+  defp indexed_file_error_message(reason, path),
+    do: "cannot read indexed file #{path}: #{inspect(reason)}"
+
+  defp read_file_summary(path, bytes, false), do: "read indexed file #{path} (#{bytes} bytes)"
+
+  defp read_file_summary(path, bytes, true),
+    do: "read indexed file #{path} (truncated from #{bytes} bytes)"
+
+  defp truncate_content(content, max_bytes) when byte_size(content) <= max_bytes,
+    do: {content, false}
+
+  defp truncate_content(content, max_bytes) do
+    {binary_part(content, 0, max_bytes), true}
+  end
+
+  defp ast_query_result(kind, label, matches, output) do
+    %{
+      status: :ok,
+      query_kind: kind,
+      matches: matches,
+      output: output,
+      summary: "#{label}: #{length(matches)} matches"
+    }
+  end
+
+  defp unsupported_query_message(label),
+    do:
+      "unsupported structural query #{inspect(label)}; try source_file, defmodule, def, call, kind:<kind>, or name:<symbol>"
+
+  defp render_files(files) do
+    Enum.map_join(files, "\n", fn file ->
+      "#{file.path} #{file.language} #{file.symbol_count} symbols"
     end)
+  end
+
+  defp render_outlines(files) do
+    Enum.map_join(files, "\n", fn file ->
+      file.symbols
+      |> Enum.map_join("\n", &"  #{render_symbol(&1)}")
+      |> case do
+        "" -> render_file_header(file)
+        symbols -> render_file_header(file) <> "\n" <> symbols
+      end
+    end)
+  end
+
+  defp render_file_header(file), do: "#{file.path} #{file.language} #{file.symbol_count} symbols"
+
+  defp render_symbols(symbols) do
+    Enum.map_join(symbols, "\n", &render_symbol/1)
   end
 
   defp render_matches(matches) do
     Enum.map_join(matches, "\n", fn match ->
-      "#{match.path}:#{match.start_line} #{match.kind} #{match.name}"
+      "#{match.path}:#{match.start_line} #{match.kind} #{match.name} id=#{match.id}"
     end)
+  end
+
+  defp render_symbol(symbol) do
+    "#{symbol.kind} #{symbol.name} id=#{symbol.id} (lines #{symbol.start_line}-#{symbol.end_line})"
   end
 
   defp render_callers(callers) do
@@ -171,11 +322,11 @@ defmodule Structural.Backend do
 
   # --- name resolution ---
 
-  defp search_candidates(server, symbol) do
+  defp search_candidates(server, symbol, opts) do
     symbol
     |> candidate_names()
     |> Enum.flat_map(fn name ->
-      {:ok, matches} = Index.search(server, name)
+      {:ok, matches} = Index.search(server, name, opts)
       matches
     end)
     |> Enum.uniq_by(& &1.id)
@@ -189,6 +340,93 @@ defmodule Structural.Backend do
   defp callee_name(symbol), do: symbol |> String.replace(~r"/\d+$", "") |> last_segment()
 
   defp last_segment(name), do: name |> String.split(".") |> List.last()
+
+  # --- compact structural query DSL ---
+
+  defp ast_query_plan(query) do
+    downcased = String.downcase(query)
+
+    cond do
+      source_file_query?(downcased) ->
+        {:files, query}
+
+      call_query?(downcased) ->
+        {:calls, query, call_opts(query)}
+
+      kind = explicit_kind(query) ->
+        {:symbols, query, [kind: kind]}
+
+      name = explicit_name(query) ->
+        {:search, query, name}
+
+      module_query?(downcased) ->
+        {:symbols, query, [kind: "module"]}
+
+      private_function_query?(downcased) ->
+        {:symbols, query, [kind: "private_function"]}
+
+      macro_query?(downcased) ->
+        {:symbols, query, [kind: "macro"]}
+
+      function_query?(downcased) ->
+        {:symbols, query, [kinds: ["function", "private_function", "macro"]]}
+
+      true ->
+        {:unsupported, query}
+    end
+  end
+
+  defp source_file_query?(query),
+    do: String.contains?(query, "source_file") or query in ["file", "files"]
+
+  defp call_query?(query), do: String.contains?(query, "call")
+
+  defp module_query?(query),
+    do: String.contains?(query, "defmodule") or String.contains?(query, "module")
+
+  defp private_function_query?(query),
+    do: String.contains?(query, "defp") or String.contains?(query, "private_function")
+
+  defp macro_query?(query),
+    do: String.contains?(query, "defmacro") or String.contains?(query, "macro")
+
+  defp function_query?(query),
+    do: String.contains?(query, "def") or String.contains?(query, "function")
+
+  defp explicit_kind(query) do
+    case Regex.run(~r/(?:kind|type):([A-Za-z_]+)/, query) do
+      [_match, kind] -> kind
+      nil -> nil
+    end
+  end
+
+  defp explicit_name(query) do
+    case Regex.run(~r/name:([A-Za-z0-9_.!?\/]+)/, query) do
+      [_match, name] -> name
+      nil -> nil
+    end
+  end
+
+  defp call_opts(query) do
+    case Regex.run(~r/(?:callee|name):([A-Za-z0-9_.!?\/]+)/, query) do
+      [_match, callee] -> [callee: callee]
+      nil -> []
+    end
+  end
+
+  defp search_opts(args) do
+    args
+    |> Map.take([:kind, :path, :limit])
+    |> Enum.reject(&blank_value?/1)
+  end
+
+  defp blank_value?({_key, nil}), do: true
+  defp blank_value?({_key, ""}), do: true
+  defp blank_value?(_pair), do: false
+
+  defp path_summary(nil), do: ""
+  defp path_summary(""), do: ""
+  defp path_summary(path), do: " under #{path}"
 
   # --- index process ---
 

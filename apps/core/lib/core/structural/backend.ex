@@ -22,9 +22,12 @@ defmodule Core.Structural.Backend do
   @type operation ::
           :index_repo
           | :index_status
+          | :indexed_files
+          | :indexed_outline
           | :ast_outline
           | :symbol_search
           | :ast_query
+          | :read_indexed_file
           | :fetch_node
           | :definitions
           | :callers

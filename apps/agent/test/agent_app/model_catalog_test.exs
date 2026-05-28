@@ -3,20 +3,27 @@ defmodule AgentApp.ModelCatalogTest do
 
   alias AgentApp.ModelCatalog
 
-  test "default instructions push parallel tool calls and structural-tool use" do
+  test "default instructions push structural-only tool use" do
     instructions = ModelCatalog.default().instructions
 
-    # Parallel-tool guidance — the highest-impact nudge for end-to-end latency.
+    # Parallel-tool guidance for structural lookups.
     assert instructions =~ "Parallelize"
     assert instructions =~ "sibling tool calls in the same assistant response"
-    assert instructions =~ "`batch` tool"
-    assert instructions =~ "Do not request files one at a time"
+    assert instructions =~ "Do not request structural lookups one at a time"
 
-    # Structural-tool guidance.
+    # Structural-only guidance.
+    assert instructions =~ "index_status"
+    assert instructions =~ "index_repo"
+    assert instructions =~ "indexed_files"
+    assert instructions =~ "indexed_outline"
+    assert instructions =~ "read_indexed_file"
     assert instructions =~ "symbol_search"
     assert instructions =~ "ast_outline"
+    assert instructions =~ "ast_query"
     assert instructions =~ "fetch_node"
-    assert instructions =~ "fall back to grep and read_file"
+    assert instructions =~ "Prefer one indexed_outline call over many ast_outline calls"
+    assert instructions =~ "Do not invent symbol ids"
+    assert instructions =~ "shell, grep, list_files, read_file, edit_file, write_file, or batch"
   end
 
   test "catalog model options include a configurable thinking level" do
