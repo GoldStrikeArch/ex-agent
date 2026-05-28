@@ -1,9 +1,9 @@
-defmodule AgentApp.MixProject do
+defmodule Structural.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :agent,
+      app: :structural,
       version: "0.1.0",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
@@ -11,7 +11,6 @@ defmodule AgentApp.MixProject do
       lockfile: "../../mix.lock",
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
-      escript: [main_module: AgentApp.CLI],
       deps: deps()
     ]
   end
@@ -19,16 +18,15 @@ defmodule AgentApp.MixProject do
   def application do
     [
       extra_applications: [:logger],
-      mod: {AgentApp.Application, []}
+      mod: {Structural.Application, []}
     ]
   end
 
   defp deps do
     [
       {:core, in_umbrella: true},
-      {:llm, in_umbrella: true},
-      {:structural, in_umbrella: true},
-      {:tui, in_umbrella: true}
+      {:exqlite, "~> 0.36"},
+      {:tree_sitter_language_pack, "1.9.0-rc.12"}
     ]
   end
 end

@@ -144,7 +144,12 @@ defmodule Tui.TerminalApp.State do
           transcript: Transcript.append_event(state.transcript, event, now)
       }
 
-    {state, []}
+    # High-frequency streaming events (`:message_delta`, `:tool_output`) trigger
+    # one full transcript re-wrap per arrival. We suppress their render and let
+    # the 100ms spinner tick coalesce paints to ~10fps; lower-frequency events
+    # (started/finished/etc.) still render immediately so the screen stays
+    # responsive.
+    {state, render_actions(event)}
   end
 
   def reduce({:command_result, command_ref, result}, state) do
@@ -209,6 +214,11 @@ defmodule Tui.TerminalApp.State do
 
   def reduce(:quit, state), do: {state, [:quit]}
   def reduce(_msg, state), do: {state, []}
+
+  defp render_actions({:message_delta, _id, _text}), do: [:skip_render]
+  defp render_actions({:tool_output, _call_id, _chunk}), do: [:skip_render]
+  defp render_actions({:assistant_delta, _id, _text}), do: [:skip_render]
+  defp render_actions(_event), do: []
 
   @doc """
   Returns true when slash-command suggestions should handle navigation keys.

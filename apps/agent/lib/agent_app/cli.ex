@@ -68,6 +68,7 @@ defmodule AgentApp.CLI do
             provider: flags[:provider],
             auth_provider: flags[:auth_provider],
             base_url: flags[:base_url],
+            reasoning_effort: flags[:reasoning_effort],
             credential_resolver: &AgentApp.Auth.resolve_credential/2
           ]
           |> Enum.reject(fn {_key, value} -> is_nil(value) end),
@@ -97,6 +98,14 @@ defmodule AgentApp.CLI do
     parse_flags(rest, Map.put(flags, :base_url, base_url), prompt_args)
   end
 
+  defp parse_flags(["--thinking", level | rest], flags, prompt_args) do
+    parse_flags(rest, Map.put(flags, :reasoning_effort, level), prompt_args)
+  end
+
+  defp parse_flags(["--reasoning-effort", level | rest], flags, prompt_args) do
+    parse_flags(rest, Map.put(flags, :reasoning_effort, level), prompt_args)
+  end
+
   defp parse_flags([arg | rest], flags, prompt_args),
     do: parse_flags(rest, flags, [arg | prompt_args])
 
@@ -106,7 +115,7 @@ defmodule AgentApp.CLI do
 
   defp run_terminal_app(session_opts, initial_prompt) do
     case AgentApp.Interactive.run(
-           session_opts: session_opts,
+           session_opts: Keyword.put(session_opts, :index_workspace, true),
            initial_prompt: initial_prompt
          ) do
       :ok ->

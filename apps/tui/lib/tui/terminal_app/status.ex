@@ -22,6 +22,13 @@ defmodule Tui.TerminalApp.Status do
 
   @type event_status :: :ok | :error | :cancelled | :timeout
 
+  @type model_state :: %{
+          label: String.t() | nil,
+          provider: term(),
+          model: String.t(),
+          thinking_level: String.t() | nil
+        }
+
   @type t :: %__MODULE__{
           active_batches: %{String.t() => batch_state()},
           active_tools: %{String.t() => tool_state()},
@@ -29,6 +36,7 @@ defmodule Tui.TerminalApp.Status do
           last_batch: {String.t(), event_status()} | nil,
           last_error: {atom(), term()} | nil,
           last_tool: {String.t(), String.t(), event_status(), term()} | nil,
+          model: model_state() | nil,
           permission: permission_state() | nil,
           session_id: String.t() | nil,
           status: :idle | :running | :finished | :error
@@ -40,6 +48,7 @@ defmodule Tui.TerminalApp.Status do
             last_batch: nil,
             last_error: nil,
             last_tool: nil,
+            model: nil,
             permission: nil,
             session_id: nil,
             status: :idle
@@ -143,6 +152,10 @@ defmodule Tui.TerminalApp.Status do
     %{state | last_error: {scope, reason}, status: :error}
   end
 
+  def reduce_event(state, {:model_configured, model}) when is_map(model) do
+    %{state | model: normalize_model(model)}
+  end
+
   def reduce_event(state, _event), do: state
 
   @doc """
@@ -155,6 +168,7 @@ defmodule Tui.TerminalApp.Status do
       Atom.to_string(state.status),
       session_segment(state),
       turn_segment(state),
+      model_segment(state),
       " | tools ",
       Integer.to_string(map_size(state.active_tools)),
       " | batches ",
@@ -171,6 +185,8 @@ defmodule Tui.TerminalApp.Status do
   def panel_lines(%__MODULE__{} = state) do
     [
       summary_line(state),
+      model_line(state),
+      thinking_line(state),
       active_tools_line(state),
       active_batches_line(state),
       permission_line(state),
@@ -204,8 +220,27 @@ defmodule Tui.TerminalApp.Status do
   defp turn_segment(%{current_turn: nil}), do: ""
   defp turn_segment(%{current_turn: turn_id}), do: [" | turn ", turn_id]
 
+  defp model_segment(%{model: nil}), do: ""
+
+  defp model_segment(%{model: model}) do
+    [" | model ", model.model, " | thinking ", thinking_label(model.thinking_level)]
+  end
+
   defp permission_segment(%{permission: %{status: :pending}}), do: " | permission pending"
   defp permission_segment(_state), do: ""
+
+  defp model_line(%{model: nil}), do: ""
+
+  defp model_line(%{model: model}) do
+    label = if model.label, do: "#{model.label} ", else: ""
+    "model: #{label}(#{model.model})"
+  end
+
+  defp thinking_line(%{model: nil}), do: ""
+
+  defp thinking_line(%{model: model}) do
+    "thinking: #{thinking_label(model.thinking_level)}"
+  end
 
   defp active_tools_line(%{active_tools: tools}) when map_size(tools) == 0, do: ""
 
@@ -268,5 +303,26 @@ defmodule Tui.TerminalApp.Status do
 
   defp format_tool({call_id, %{name: name, output_bytes: bytes}}) do
     "#{name}(#{call_id}, #{bytes} B)"
+  end
+
+  defp normalize_model(model) do
+    %{
+      label: string_value(model, :label) || string_value(model, "label"),
+      provider: Map.get(model, :provider) || Map.get(model, "provider"),
+      model: string_value(model, :model) || string_value(model, "model") || "unknown",
+      thinking_level:
+        string_value(model, :thinking_level) || string_value(model, "thinking_level") ||
+          string_value(model, "thinkingLevel")
+    }
+  end
+
+  defp thinking_label(nil), do: "default"
+  defp thinking_label(level), do: to_string(level)
+
+  defp string_value(map, key) do
+    case Map.get(map, key) do
+      value when is_binary(value) and value != "" -> value
+      _value -> nil
+    end
   end
 end

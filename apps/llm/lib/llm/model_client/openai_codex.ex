@@ -80,11 +80,12 @@ defmodule LLM.ModelClient.OpenAICodex do
           {:ok, request()} | {:error, term()}
   def build_request(messages, tools, opts) do
     with {:ok, model} <- required_model(opts),
-         {:ok, auth} <- resolve_auth(opts) do
+         {:ok, auth} <- resolve_auth(opts),
+         {:ok, reasoning} <- LLM.Thinking.reasoning(opts) do
       session_id = session_id(opts)
       request_id = session_id || request_id(opts)
       url = codex_endpoint(Keyword.get(opts, :base_url))
-      body = body(model, messages, tools, opts)
+      body = body(model, messages, tools, opts, reasoning)
       sse_headers = sse_headers(auth, session_id, request_id, opts)
       websocket_headers = websocket_headers(auth, session_id, request_id, opts)
 
@@ -401,7 +402,7 @@ defmodule LLM.ModelClient.OpenAICodex do
     |> maybe_put_header("x-client-request-id", request_id)
   end
 
-  defp body(model, messages, tools, opts) do
+  defp body(model, messages, tools, opts, reasoning) do
     %{
       model: model,
       stream: true,
@@ -410,7 +411,7 @@ defmodule LLM.ModelClient.OpenAICodex do
     }
     |> maybe_put(:instructions, Keyword.get(opts, :instructions))
     |> maybe_put(:tools, tool_schemas(tools))
-    |> maybe_put(:reasoning, reasoning(opts))
+    |> maybe_put(:reasoning, reasoning)
     |> Map.put(:text, %{verbosity: Keyword.get(opts, :text_verbosity, "low")})
     |> Map.put(:include, ["reasoning.encrypted_content"])
     |> Map.put(:tool_choice, "auto")
@@ -485,13 +486,6 @@ defmodule LLM.ModelClient.OpenAICodex do
         strict: nil
       }
     end)
-  end
-
-  defp reasoning(opts) do
-    case Keyword.get(opts, :reasoning_effort) do
-      effort when is_binary(effort) and effort != "" -> %{effort: effort}
-      _effort -> nil
-    end
   end
 
   defp prompt_cache_key(opts) do

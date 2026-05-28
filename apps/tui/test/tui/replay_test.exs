@@ -11,7 +11,15 @@ defmodule Tui.ReplayTest do
         %{"id" => "message-user", "role" => "user", "content" => "hello"}
       ]),
       record("message_started", ["message-assistant", "assistant"]),
+      record("model_request", [
+        "model-1",
+        %{"message_count" => 1, "model_client" => "Core.ModelClient.Mock"}
+      ]),
       record("message_delta", ["message-assistant", "hi"]),
+      record("model_response", [
+        "model-1",
+        %{"status" => "ok", "response" => %{"content" => %{"text" => "hi"}}}
+      ]),
       record("message_finished", [
         %{"id" => "message-assistant", "role" => "assistant", "content" => "hi"}
       ])

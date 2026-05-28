@@ -12,7 +12,11 @@ defmodule AgentApp.Settings do
   alias Core.FileLockManager
 
   @type settings :: %{optional(String.t()) => term()}
-  @type default_model :: %{provider: String.t(), model: String.t()}
+  @type default_model :: %{
+          required(:provider) => String.t(),
+          required(:model) => String.t(),
+          optional(:thinking_level) => String.t() | nil
+        }
 
   @doc """
   Reads all user settings.
@@ -62,12 +66,15 @@ defmodule AgentApp.Settings do
     Keyword.get(opts, :settings_path) || Path.join(Storage.agent_dir(opts), "settings.json")
   end
 
-  defp default_model_from_settings(%{
-         "defaultProvider" => provider,
-         "defaultModel" => model
-       })
+  defp default_model_from_settings(
+         %{
+           "defaultProvider" => provider,
+           "defaultModel" => model
+         } = settings
+       )
        when is_binary(provider) and is_binary(model) and provider != "" and model != "" do
-    {:ok, %{provider: provider, model: model}}
+    default = %{provider: provider, model: model}
+    {:ok, maybe_put_thinking_level(default, Map.get(settings, "defaultThinkingLevel"))}
   end
 
   defp default_model_from_settings(_settings), do: :none
@@ -90,6 +97,7 @@ defmodule AgentApp.Settings do
       settings
       |> Map.put("defaultProvider", provider_key(provider))
       |> Map.put("defaultModel", model)
+      |> put_default_thinking_level(Keyword.fetch(opts, :thinking_level))
       |> write_all(opts)
     end
   end
@@ -139,6 +147,22 @@ defmodule AgentApp.Settings do
       {:error, :enotsup} -> :ok
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp maybe_put_thinking_level(default, level) when is_binary(level) and level != "" do
+    Map.put(default, :thinking_level, level)
+  end
+
+  defp maybe_put_thinking_level(default, _level), do: default
+
+  defp put_default_thinking_level(settings, :error), do: settings
+
+  defp put_default_thinking_level(settings, {:ok, nil}) do
+    Map.delete(settings, "defaultThinkingLevel")
+  end
+
+  defp put_default_thinking_level(settings, {:ok, level}) when is_binary(level) do
+    Map.put(settings, "defaultThinkingLevel", level)
   end
 
   defp provider_key(:openai_codex), do: "openai-codex"

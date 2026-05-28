@@ -52,6 +52,30 @@ defmodule Core.EventTest do
     assert Enum.map(events, &round_trip/1) == events
   end
 
+  test "round trips compact model diagnostics" do
+    events = [
+      Core.Event.model_request("model-1", %{
+        session_id: "session-1",
+        turn_id: "turn-1",
+        iteration: 0,
+        model_client: "Core.ModelClient.Mock",
+        model_opts: %{api_key: "[redacted]"},
+        message_count: 1,
+        messages: [
+          %{role: :user, content: %{text: "hello", bytes: 5, truncated: false}}
+        ],
+        tool_count: 0,
+        tools: []
+      }),
+      Core.Event.model_response("model-1", %{
+        status: :ok,
+        response: %{content: %{text: "hi", bytes: 2, truncated: false}, tool_calls: []}
+      })
+    ]
+
+    assert Enum.map(events, &round_trip/1) == events
+  end
+
   defp round_trip(event) do
     event
     |> Core.Event.to_record()

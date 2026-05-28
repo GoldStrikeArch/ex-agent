@@ -48,6 +48,41 @@ defmodule CoreTest do
     assert :ok = Core.stop_session(session)
   end
 
+  test "emits compact model call diagnostics" do
+    :ok = Core.EventBus.subscribe()
+
+    assert {:ok, session} =
+             Core.start_session(model_opts: [script: ["diagnostic response"], api_key: "secret"])
+
+    assert {:ok, %{content: "diagnostic response"}} = Core.send_message(session, "hello")
+
+    assert_receive {:core_event, {:model_request, model_call_id, request}}
+
+    assert request.model_opts.api_key == "[redacted]"
+    assert request.message_count == 1
+
+    assert [%{role: :user, content: %{text: "hello", bytes: 5, truncated: false}}] =
+             request.messages
+
+    assert request.tool_count > 0
+
+    assert_receive {:core_event,
+                    {:model_response, ^model_call_id,
+                     %{
+                       status: :ok,
+                       response: %{
+                         content: %{
+                           text: "diagnostic response",
+                           bytes: 19,
+                           truncated: false
+                         },
+                         tool_calls: []
+                       }
+                     }}}
+
+    assert :ok = Core.stop_session(session)
+  end
+
   test "runs scripted model tool calls and records tool result messages" do
     workspace =
       Path.join(
@@ -262,6 +297,37 @@ defmodule CoreTest do
     assert_eventually(fn ->
       File.exists?(path) and File.read!(path) =~ ~S("event":"message_delta")
     end)
+
+    GenServer.stop(logger)
+    File.rm(path)
+  end
+
+  test "event log stringifies runtime terms and redacts sensitive keys" do
+    path =
+      Path.join(
+        System.tmp_dir!(),
+        "agent-core-event-log-runtime-#{System.unique_integer([:positive])}.jsonl"
+      )
+
+    assert {:ok, logger} = Core.EventLog.start_link(path: path)
+
+    Core.EventBus.publish(
+      Core.Event.tool_started("tool-runtime", "blocking", %{
+        "api_key" => "secret",
+        "callback" => fn -> :ok end,
+        "test" => self()
+      })
+    )
+
+    assert_eventually(fn ->
+      File.exists?(path) and File.read!(path) =~ ~S("event":"tool_started")
+    end)
+
+    contents = File.read!(path)
+    assert contents =~ "[redacted]"
+    refute contents =~ "secret"
+    assert contents =~ "#PID"
+    assert contents =~ "#Function"
 
     GenServer.stop(logger)
     File.rm(path)

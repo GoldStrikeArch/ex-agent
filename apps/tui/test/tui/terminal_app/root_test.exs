@@ -34,6 +34,22 @@ defmodule Tui.TerminalApp.RootTest do
     assert lines == ["session started s1"]
   end
 
+  test "high-frequency streaming events signal :skip_render so paints coalesce" do
+    state = Root.new(subscribe: false)
+
+    {_state, actions} = Root.reduce({:agent_event, {:message_delta, "m1", "tok"}}, state)
+    assert actions == [:skip_render]
+
+    {_state, actions} = Root.reduce({:agent_event, {:tool_output, "t1", "chunk"}}, state)
+    assert actions == [:skip_render]
+
+    # Lower-frequency events still render immediately.
+    {_state, actions} =
+      Root.reduce({:agent_event, {:message_started, "m1", :assistant}}, state)
+
+    assert actions == []
+  end
+
   test "reports missing prompt callback instead of submitting" do
     state =
       Root.new(subscribe: false)
@@ -52,13 +68,13 @@ defmodule Tui.TerminalApp.RootTest do
         send(parent, {:handled_command, command_id, context})
         :ok
       end)
-      |> Map.update!(:input, &Prompt.set_value(&1, "/model"))
+      |> Map.update!(:input, &Prompt.set_value(&1, "/model high"))
 
     {state, []} = Root.reduce(:submit, state)
 
     assert Prompt.value(state.input) == ""
     assert MapSet.size(state.pending_prompts) == 1
-    assert_receive {:handled_command, :model, %{prompt: "/model"}}
+    assert_receive {:handled_command, :model, %{prompt: "/model high"}}
     assert_receive {:command_result, _ref, :ok}
   end
 
@@ -206,7 +222,7 @@ defmodule Tui.TerminalApp.RootTest do
         {:assistant_message_finished, "m1"}
       ]
       |> Enum.reduce(Root.new(subscribe: false, width: width, height: height), fn event, acc ->
-        {acc, []} = Root.reduce({:agent_event, event}, acc)
+        {acc, _actions} = Root.reduce({:agent_event, event}, acc)
         acc
       end)
 

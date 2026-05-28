@@ -49,14 +49,57 @@ defmodule AgentApp.InteractiveTest do
     assert state.model_opts[:model] == "gpt-5.5"
     assert state.model_opts[:provider] == :openai_codex
     assert state.model_opts[:auth_provider] == :openai_codex
+    assert state.model_opts[:reasoning_effort] == "medium"
     assert is_function(state.model_opts[:credential_resolver], 2)
     assert state.model_opts[:agent_dir] == agent_dir
     assert is_binary(state.model_opts[:instructions])
     assert state.permission_mode == :trusted
     assert Agent.get(model_state, & &1.configured?)
+    assert Agent.get(model_state, & &1.model.thinking_level) == "medium"
 
-    assert {:ok, %{provider: "openai-codex", model: "gpt-5.5"}} =
+    assert {:ok, %{provider: "openai-codex", model: "gpt-5.5", thinking_level: "medium"}} =
              Settings.default_model(agent_dir: agent_dir)
+
+    assert_eventually(fn ->
+      %{user_state: ui_state} = :sys.get_state(runtime)
+      ui_state.status.model && ui_state.status.model.thinking_level == "medium"
+    end)
+  end
+
+  test "model command can choose a thinking level" do
+    agent_dir = tmp_dir()
+    credential = credential()
+    assert :ok = Storage.write(:openai_codex, credential, agent_dir: agent_dir)
+
+    runtime = start_runtime(80, 12)
+    {:ok, session} = Core.start_session(model_client: Core.ModelClient.Unconfigured)
+    {:ok, model_state} = Agent.start_link(fn -> %{configured?: false} end)
+
+    on_exit(fn ->
+      stop_if_alive(model_state, &Agent.stop/1)
+      stop_if_alive(session, &Core.stop_session/1)
+      stop_if_alive(runtime, &TerminalApp.shutdown/1)
+    end)
+
+    assert :ok =
+             Interactive.handle_command(
+               :model,
+               %{prompt: "/model high"},
+               runtime,
+               session,
+               model_state,
+               agent_dir: agent_dir
+             )
+
+    state = :sys.get_state(session)
+    assert state.model_opts[:reasoning_effort] == "high"
+
+    assert {:ok, %{thinking_level: "high"}} = Settings.default_model(agent_dir: agent_dir)
+
+    assert_eventually(fn ->
+      %{user_state: ui_state} = :sys.get_state(runtime)
+      ui_state.status.model && ui_state.status.model.thinking_level == "high"
+    end)
   end
 
   test "model command logs auth instructions when credentials are missing" do

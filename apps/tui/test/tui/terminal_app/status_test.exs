@@ -25,6 +25,22 @@ defmodule Tui.TerminalApp.StatusTest do
     assert rendered =~ "last tool: read_file :ok read README.md"
   end
 
+  test "renders configured model and thinking level" do
+    state =
+      Status.new()
+      |> Status.reduce_event(
+        {:model_configured,
+         %{label: "OpenAI subscription", model: "gpt-5.5", thinking_level: "high"}}
+      )
+
+    assert Status.summary_line(state) =~ "model gpt-5.5"
+    assert Status.summary_line(state) =~ "thinking high"
+
+    rendered = Enum.join(Status.panel_lines(state), "\n")
+    assert rendered =~ "model: OpenAI subscription (gpt-5.5)"
+    assert rendered =~ "thinking: high"
+  end
+
   test "tracks active batches and permission state" do
     state =
       Status.new()

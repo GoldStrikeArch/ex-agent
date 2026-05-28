@@ -20,8 +20,20 @@ defmodule AgentApp.ModelDefaultsTest do
     assert session_opts[:model_opts][:model] == "gpt-5.5"
     assert session_opts[:model_opts][:provider] == :openai_codex
     assert session_opts[:model_opts][:auth_provider] == :openai_codex
+    assert session_opts[:model_opts][:reasoning_effort] == "medium"
     assert session_opts[:model_opts][:agent_dir] == agent_dir
     assert is_binary(session_opts[:model_opts][:instructions])
+  end
+
+  test "persists and restores a chosen thinking level" do
+    agent_dir = tmp_dir()
+
+    assert :ok = Storage.write(:openai_codex, credential(), agent_dir: agent_dir)
+    assert {:ok, high} = ModelCatalog.default() |> ModelCatalog.with_thinking_level("high")
+    assert :ok = ModelDefaults.persist(high, agent_dir: agent_dir)
+
+    assert {session_opts, nil} = ModelDefaults.apply_to_session_opts([], agent_dir: agent_dir)
+    assert session_opts[:model_opts][:reasoning_effort] == "high"
   end
 
   test "does not override explicitly configured session options" do

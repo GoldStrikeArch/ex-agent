@@ -160,6 +160,30 @@ defmodule LLM.ModelClient.OpenAIResponsesTest do
            ] = request.body.input
   end
 
+  test "includes configured thinking level as reasoning effort" do
+    assert {:ok, request} =
+             OpenAIResponses.build_request(
+               [%{role: :user, content: "think"}],
+               [],
+               model: "gpt-test",
+               api_key: "sk-test",
+               reasoning_effort: "high"
+             )
+
+    assert request.body.reasoning == %{effort: "high"}
+  end
+
+  test "rejects invalid thinking levels before making a request" do
+    assert {:error, {:invalid_thinking_level, "huge", _levels}} =
+             OpenAIResponses.build_request(
+               [%{role: :user, content: "think"}],
+               [],
+               model: "gpt-test",
+               api_key: "sk-test",
+               reasoning_effort: "huge"
+             )
+  end
+
   test "public Responses request does not include Codex backend headers or body options" do
     assert {:ok, request} =
              OpenAIResponses.build_request(

@@ -14,6 +14,8 @@ defmodule AgentApp.ModelCatalog do
           credential_resolver: function(),
           instructions: String.t(),
           text_verbosity: String.t(),
+          thinking_level: String.t() | nil,
+          thinking_levels: [String.t()],
           permission_mode: Core.PermissionPolicy.mode()
         }
 
@@ -21,12 +23,12 @@ defmodule AgentApp.ModelCatalog do
   @default_instructions """
   You are a coding agent running in a local workspace.
   Inspect before editing.
-  Prefer batching independent read-only tool calls; emit sibling tool calls or use the batch tool to run them in parallel.
-  Prefer structural tools for navigation when available: use symbol_search to find definitions, ast_outline before reading large files, and fetch_node to inspect exact definitions.
-  When structural tools report the backend is unavailable, fall back to grep and read_file.
-  Use shell commands only when they directly help the task.
-  After edits, run focused validation when possible.
-  Keep responses concise and grounded in observed files and command output.
+
+  Parallelize independent tool calls. Whenever you need more than one read_file, grep, list_files, ast_outline, symbol_search, or fetch_node, emit them as sibling tool calls in the same assistant response, or call the `batch` tool with the full list of calls. Do not request files one at a time across multiple turns — sequential single reads are wasteful and substantially slow the agent.
+
+  Prefer structural tools for navigation when available: symbol_search to find definitions, ast_outline before reading large files, fetch_node to inspect exact definitions. If structural results report the index is empty, run index_repo once to build it; if they report the backend is unavailable, fall back to grep and read_file.
+
+  Use shell commands only when they directly help the task. After edits, run focused validation when possible. Keep responses concise and grounded in observed files and command output.
   """
 
   @doc """
@@ -58,6 +60,35 @@ defmodule AgentApp.ModelCatalog do
   end
 
   @doc """
+  Returns the supported thinking levels for selectable models.
+  """
+  @spec thinking_levels() :: [String.t()]
+  def thinking_levels, do: LLM.Thinking.levels()
+
+  @doc """
+  Returns a copy of `option` with a normalized thinking level.
+  """
+  @spec with_thinking_level(option(), term()) :: {:ok, option()} | {:error, term()}
+  def with_thinking_level(option, level) do
+    with {:ok, normalized} <- LLM.Thinking.normalize(level) do
+      {:ok, %{option | thinking_level: normalized}}
+    end
+  end
+
+  @doc """
+  Converts a catalog option into a compact status payload for the TUI.
+  """
+  @spec status_info(option()) :: map()
+  def status_info(option) do
+    %{
+      label: option.label,
+      provider: option.provider,
+      model: option.model,
+      thinking_level: option.thinking_level
+    }
+  end
+
+  @doc """
   Converts a catalog option into `Core.configure_model/2` options.
   """
   @spec core_opts(option(), keyword()) :: keyword()
@@ -65,14 +96,16 @@ defmodule AgentApp.ModelCatalog do
     [
       model_client: option.client,
       model_opts:
-        [
-          model: option.model,
-          provider: option.provider,
-          auth_provider: option.auth_provider,
-          credential_resolver: option.credential_resolver,
-          instructions: option.instructions,
-          text_verbosity: option.text_verbosity
-        ] ++ auth_context_opts(auth_opts),
+        ([
+           model: option.model,
+           provider: option.provider,
+           auth_provider: option.auth_provider,
+           credential_resolver: option.credential_resolver,
+           instructions: option.instructions,
+           text_verbosity: option.text_verbosity,
+           reasoning_effort: option.thinking_level
+         ] ++ auth_context_opts(auth_opts))
+        |> Enum.reject(fn {_key, value} -> is_nil(value) end),
       permission_mode: option.permission_mode
     ]
   end
@@ -115,6 +148,8 @@ defmodule AgentApp.ModelCatalog do
       credential_resolver: &AgentApp.Auth.resolve_credential/2,
       instructions: String.trim(@default_instructions),
       text_verbosity: "low",
+      thinking_level: "medium",
+      thinking_levels: thinking_levels(),
       permission_mode: :trusted
     }
   end

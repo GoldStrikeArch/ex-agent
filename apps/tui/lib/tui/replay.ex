@@ -16,6 +16,8 @@ defmodule Tui.Replay do
     "message_started" => :message_started,
     "message_delta" => :message_delta,
     "message_finished" => :message_finished,
+    "model_request" => :model_request,
+    "model_response" => :model_response,
     "tool_started" => :tool_started,
     "tool_output" => :tool_output,
     "tool_finished" => :tool_finished,

@@ -23,6 +23,26 @@ defmodule AgentApp.SettingsTest do
     assert (file_stat.mode &&& 0o777) == 0o600
   end
 
+  test "writes and reads the default model thinking level" do
+    agent_dir = tmp_dir()
+
+    assert :ok =
+             Settings.put_default_model(:openai_codex, "gpt-5",
+               agent_dir: agent_dir,
+               thinking_level: "high"
+             )
+
+    assert {:ok,
+            %{
+              "defaultProvider" => "openai-codex",
+              "defaultModel" => "gpt-5",
+              "defaultThinkingLevel" => "high"
+            }} = Settings.read(agent_dir: agent_dir)
+
+    assert {:ok, %{provider: "openai-codex", model: "gpt-5", thinking_level: "high"}} =
+             Settings.default_model(agent_dir: agent_dir)
+  end
+
   test "preserves unrelated settings when writing the default model" do
     agent_dir = tmp_dir()
     File.mkdir_p!(agent_dir)

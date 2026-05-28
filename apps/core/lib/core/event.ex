@@ -25,6 +25,8 @@ defmodule Core.Event do
           | {:message_started, String.t(), role()}
           | {:message_delta, String.t(), String.t()}
           | {:message_finished, map()}
+          | {:model_request, String.t(), map()}
+          | {:model_response, String.t(), map()}
           | {:tool_started, String.t(), String.t(), tool_args()}
           | {:tool_output, String.t(), String.t()}
           | {:tool_finished, String.t(), status(), tool_summary()}
@@ -110,6 +112,18 @@ defmodule Core.Event do
   """
   @spec message_finished(map()) :: t()
   def message_finished(message), do: {:message_finished, message}
+
+  @doc """
+  Builds a compact model request diagnostic event.
+  """
+  @spec model_request(String.t(), map()) :: t()
+  def model_request(model_call_id, request), do: {:model_request, model_call_id, request}
+
+  @doc """
+  Builds a compact model response diagnostic event.
+  """
+  @spec model_response(String.t(), map()) :: t()
+  def model_response(model_call_id, response), do: {:model_response, model_call_id, response}
 
   @doc """
   Builds a tool start event.
@@ -244,6 +258,8 @@ defmodule Core.Event do
   defp event_atom("message_started"), do: {:ok, :message_started}
   defp event_atom("message_delta"), do: {:ok, :message_delta}
   defp event_atom("message_finished"), do: {:ok, :message_finished}
+  defp event_atom("model_request"), do: {:ok, :model_request}
+  defp event_atom("model_response"), do: {:ok, :model_response}
   defp event_atom("tool_started"), do: {:ok, :tool_started}
   defp event_atom("tool_output"), do: {:ok, :tool_output}
   defp event_atom("tool_finished"), do: {:ok, :tool_finished}
@@ -321,31 +337,42 @@ defmodule Core.Event do
 
   defp known_atom(value, _allowed), do: value
 
+  defp normalize_key("api_key"), do: :api_key
   defp normalize_key("args"), do: :args
-  defp normalize_key("bytes"), do: :bytes
   defp normalize_key("column"), do: :column
   defp normalize_key("content"), do: :content
+  defp normalize_key("bytes"), do: :bytes
   defp normalize_key("count"), do: :count
   defp normalize_key("entries"), do: :entries
   defp normalize_key("file"), do: :file
   defp normalize_key("id"), do: :id
+  defp normalize_key("iteration"), do: :iteration
   defp normalize_key("line"), do: :line
   defp normalize_key("matches"), do: :matches
   defp normalize_key("message_id"), do: :message_id
+  defp normalize_key("message_count"), do: :message_count
+  defp normalize_key("messages"), do: :messages
+  defp normalize_key("model_client"), do: :model_client
+  defp normalize_key("model_opts"), do: :model_opts
   defp normalize_key("name"), do: :name
   defp normalize_key("output"), do: :output
   defp normalize_key("path"), do: :path
   defp normalize_key("provider_id"), do: :provider_id
   defp normalize_key("reason"), do: :reason
+  defp normalize_key("response"), do: :response
   defp normalize_key("role"), do: :role
   defp normalize_key("safety"), do: :safety
+  defp normalize_key("schema"), do: :schema
   defp normalize_key("session_id"), do: :session_id
   defp normalize_key("status"), do: :status
   defp normalize_key("summary"), do: :summary
   defp normalize_key("text"), do: :text
+  defp normalize_key("tool_count"), do: :tool_count
   defp normalize_key("tool_call_id"), do: :tool_call_id
   defp normalize_key("tool_calls"), do: :tool_calls
+  defp normalize_key("tools"), do: :tools
   defp normalize_key("truncated"), do: :truncated
+  defp normalize_key("turn_id"), do: :turn_id
   defp normalize_key("type"), do: :type
   defp normalize_key(key), do: key
 end

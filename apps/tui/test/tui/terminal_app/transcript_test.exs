@@ -23,21 +23,27 @@ defmodule Tui.TerminalApp.TranscriptTest do
              Transcript.blocks(transcript)
   end
 
-  test "tracks tool output bytes without dumping output chunks into the transcript" do
+  test "renders tool blocks as a single line and never dumps tool output" do
     transcript =
       Transcript.new()
       |> Transcript.append_event({:tool_started, "tool-1", "read_file", %{"path" => "README.md"}})
       |> Transcript.append_event({:tool_output, "tool-1", "abc"})
       |> Transcript.append_event({:tool_output, "tool-1", "defg"})
 
-    assert [%{kind: :tool, status: :streaming, body: body}] = Transcript.blocks(transcript)
-    assert "output 7 B" in body
-    refute Enum.any?(body, &String.contains?(&1, "abcdefg"))
+    assert [%{kind: :tool, status: :streaming, title: title, body: []}] =
+             Transcript.blocks(transcript)
+
+    assert title == "read_file README.md"
 
     transcript = Transcript.append_event(transcript, {:tool_finished, "tool-1", :error, "failed"})
 
-    assert [%{kind: :tool, status: :error, body: body}] = Transcript.blocks(transcript)
-    assert "summary failed" in body
+    assert [%{kind: :tool, status: :error, title: title, body: []}] =
+             Transcript.blocks(transcript)
+
+    assert title == "read_file README.md · failed"
+
+    rendered = Enum.join(Transcript.visible_lines(transcript, 80, 10), "\n")
+    refute rendered =~ "abcdefg"
   end
 
   test "renders permissions and edit previews as dedicated block kinds" do
@@ -189,7 +195,7 @@ defmodule Tui.TerminalApp.TranscriptTest do
     assert {:diff_add, "  +added"} in tagged
   end
 
-  test "renders a tool as `name target` with a timing line from injected timestamps" do
+  test "renders a finished tool as `name target · duration` from injected timestamps" do
     transcript =
       Transcript.new()
       |> Transcript.append_event(
@@ -198,21 +204,18 @@ defmodule Tui.TerminalApp.TranscriptTest do
       )
       |> Transcript.append_event({:tool_finished, "t1", :ok, "read 10 lines"}, 1_050)
 
-    assert [%{kind: :tool, title: "read_file README.md", body: body}] =
+    assert [%{kind: :tool, status: :done, title: "read_file README.md · 50ms", body: []}] =
              Transcript.blocks(transcript)
-
-    assert "summary read 10 lines" in body
-    assert "Took 50ms" in body
   end
 
-  test "omits the timing line when no timestamp is supplied" do
+  test "omits the duration suffix when no timestamp is supplied" do
     transcript =
       Transcript.new()
       |> Transcript.append_event({:tool_started, "t1", "read_file", %{"path" => "README.md"}})
       |> Transcript.append_event({:tool_finished, "t1", :ok, "done"})
 
-    assert [%{kind: :tool, body: body}] = Transcript.blocks(transcript)
-    refute Enum.any?(body, &String.starts_with?(&1, "Took "))
+    assert [%{kind: :tool, title: "read_file README.md", body: []}] =
+             Transcript.blocks(transcript)
   end
 
   test "separates blocks of different kinds with a blank line" do

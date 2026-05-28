@@ -10,12 +10,14 @@ defmodule LLM.Model do
           model: String.t(),
           api: :responses,
           base_url: String.t() | nil,
-          headers: %{String.t() => String.t()}
+          headers: %{String.t() => String.t()},
+          reasoning_effort: String.t() | nil
         }
 
   defstruct provider: :openai,
             model: nil,
             api: :responses,
             base_url: nil,
-            headers: %{}
+            headers: %{},
+            reasoning_effort: nil
 end

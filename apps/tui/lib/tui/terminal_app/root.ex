@@ -186,7 +186,19 @@ defmodule Tui.TerminalApp.Root do
   end
 
   defp callback_result({state, actions}) do
-    if :quit in actions, do: {:stop, state}, else: {:noreply, state}
+    cond do
+      :quit in actions ->
+        {:stop, state}
+
+      # Suppress the per-message re-render for high-frequency streaming events;
+      # the 100ms spinner tick coalesces paints to ~10fps. Capped render cadence
+      # keeps long streams from spending O(N) per-delta render time × N deltas.
+      :skip_render in actions ->
+        {:noreply, state, render?: false}
+
+      true ->
+        {:noreply, state}
+    end
   end
 
   defp ctrl?(modifiers), do: "ctrl" in modifiers or :ctrl in modifiers

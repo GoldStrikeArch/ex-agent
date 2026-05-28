@@ -16,7 +16,11 @@ defmodule AgentApp.ModelDefaults do
   Persists a catalog option as the user's default model.
   """
   @spec persist(ModelCatalog.option(), keyword()) :: :ok | {:error, term()}
-  def persist(%{settings_provider: provider, model: model}, opts \\ []) do
+  def persist(
+        %{settings_provider: provider, model: model, thinking_level: thinking_level},
+        opts \\ []
+      ) do
+    opts = Keyword.put(opts, :thinking_level, thinking_level)
     Settings.put_default_model(provider, model, opts)
   end
 
@@ -45,11 +49,19 @@ defmodule AgentApp.ModelDefaults do
   end
 
   defp restored_model_opts(auth_opts) do
-    with {:ok, %{provider: provider, model: model}} <- Settings.default_model(auth_opts),
+    with {:ok, %{provider: provider, model: model} = selection} <-
+           Settings.default_model(auth_opts),
          {:ok, option} <- ModelCatalog.fetch(provider, model),
+         {:ok, option} <- restore_thinking_level(option, selection),
          {:ok, _credential} <- resolve_credential(option, auth_opts) do
       {:ok, ModelCatalog.core_opts(option, auth_opts)}
     end
+  end
+
+  defp restore_thinking_level(option, selection) do
+    selection
+    |> Map.get(:thinking_level, option.thinking_level)
+    |> then(&ModelCatalog.with_thinking_level(option, &1))
   end
 
   defp resolve_credential(option, auth_opts) do

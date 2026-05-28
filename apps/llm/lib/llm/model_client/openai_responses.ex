@@ -33,12 +33,13 @@ defmodule LLM.ModelClient.OpenAIResponses do
           {:ok, map()} | {:error, term()}
   def build_request(messages, tools, opts) do
     with {:ok, model} <- required_model(opts),
-         {:ok, api_key} <- resolve_api_key(opts) do
+         {:ok, api_key} <- resolve_api_key(opts),
+         {:ok, reasoning} <- LLM.Thinking.reasoning(opts) do
       {:ok,
        %{
          url: endpoint(Keyword.get(opts, :base_url)),
          headers: headers(api_key, opts),
-         body: body(model, messages, tools, opts),
+         body: body(model, messages, tools, opts, reasoning),
          req_opts: Keyword.get(opts, :req_opts, []),
          timeout_ms: Keyword.get(opts, :timeout_ms, @timeout_ms)
        }}
@@ -110,7 +111,7 @@ defmodule LLM.ModelClient.OpenAIResponses do
     |> merge_headers(Keyword.get(opts, :headers, []))
   end
 
-  defp body(model, messages, tools, opts) do
+  defp body(model, messages, tools, opts, reasoning) do
     %{
       model: model,
       stream: true,
@@ -119,7 +120,7 @@ defmodule LLM.ModelClient.OpenAIResponses do
     }
     |> maybe_put(:instructions, Keyword.get(opts, :instructions))
     |> maybe_put(:tools, tool_schemas(tools))
-    |> maybe_put(:reasoning, reasoning(opts))
+    |> maybe_put(:reasoning, reasoning)
   end
 
   defp message_to_input({%{role: :user, content: content}, _index}) do
@@ -189,13 +190,6 @@ defmodule LLM.ModelClient.OpenAIResponses do
         strict: false
       }
     end)
-  end
-
-  defp reasoning(opts) do
-    case Keyword.get(opts, :reasoning_effort) do
-      effort when is_binary(effort) and effort != "" -> %{effort: effort}
-      _effort -> nil
-    end
   end
 
   defp maybe_put(map, _key, nil), do: map

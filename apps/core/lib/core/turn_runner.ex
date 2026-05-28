@@ -57,16 +57,34 @@ defmodule Core.TurnRunner do
     publish(Core.Event.message_started(assistant_message_id, :assistant))
 
     spec
-    |> stream_chat(messages, assistant_message_id)
+    |> stream_chat(messages, assistant_message_id, tool_iterations)
     |> normalize_model_response()
     |> continue_model_loop(messages, spec, tool_supervisor, tool_iterations, assistant_message_id)
   end
 
-  defp stream_chat(spec, messages, assistant_message_id) do
+  defp stream_chat(spec, messages, assistant_message_id, tool_iterations) do
+    model_call_id = new_model_call_id()
+    tool_schemas = Core.ToolRegistry.schemas(spec.tools)
+    model_opts = Keyword.put_new(spec.model_opts, :session_id, spec.session_id)
+
+    publish(
+      Core.Event.model_request(
+        model_call_id,
+        Core.ModelTrace.request(spec, messages, tool_schemas, model_opts, tool_iterations)
+      )
+    )
+
+    result = call_model_client(spec, messages, tool_schemas, model_opts, assistant_message_id)
+    publish(Core.Event.model_response(model_call_id, Core.ModelTrace.response(result)))
+
+    result
+  end
+
+  defp call_model_client(spec, messages, tool_schemas, model_opts, assistant_message_id) do
     spec.model_client.stream_chat(
       messages,
-      Core.ToolRegistry.schemas(spec.tools),
-      Keyword.put_new(spec.model_opts, :session_id, spec.session_id),
+      tool_schemas,
+      model_opts,
       message_delta_sink(assistant_message_id)
     )
   rescue
@@ -89,20 +107,14 @@ defmodule Core.TurnRunner do
   end
 
   defp normalize_model_response({:ok, response}) when is_map(response) do
-    content = response_content(response)
-    tool_calls = Map.get(response, :tool_calls, Map.get(response, "tool_calls", []))
-
-    with {:ok, calls} <- Core.ToolCall.normalize_all(tool_calls) do
-      {:ok, %{content: content, tool_calls: calls}}
+    with {:ok, calls} <- Core.ToolCall.normalize_all(Map.get(response, :tool_calls, [])) do
+      {:ok, %{content: response_content(response), tool_calls: calls}}
     end
   end
 
   defp normalize_model_response({:error, reason}), do: {:error, reason}
-  defp normalize_model_response(response), do: {:error, {:invalid_model_response, response}}
 
   defp response_content(%{content: content}) when is_binary(content), do: content
-  defp response_content(%{"content" => content}) when is_binary(content), do: content
-  defp response_content(_response), do: ""
 
   defp continue_model_loop(
          {:ok, %{content: content, tool_calls: []}},
@@ -243,6 +255,12 @@ defmodule Core.TurnRunner do
 
   defp new_message_id do
     "message-" <>
+      (System.unique_integer([:positive, :monotonic])
+       |> Integer.to_string(36))
+  end
+
+  defp new_model_call_id do
+    "model-" <>
       (System.unique_integer([:positive, :monotonic])
        |> Integer.to_string(36))
   end

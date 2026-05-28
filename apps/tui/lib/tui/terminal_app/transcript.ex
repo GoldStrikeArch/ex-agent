@@ -127,6 +127,14 @@ defmodule Tui.TerminalApp.Transcript do
     finish_message(transcript, message_id(message), role, message_content(message))
   end
 
+  def append_event(%__MODULE__{} = transcript, {:model_request, _model_call_id, _request}) do
+    transcript
+  end
+
+  def append_event(%__MODULE__{} = transcript, {:model_response, _model_call_id, _response}) do
+    transcript
+  end
+
   def append_event(%__MODULE__{} = transcript, {:assistant_message_started, message_id}) do
     start_message(transcript, message_id, :assistant)
   end
@@ -216,6 +224,10 @@ defmodule Tui.TerminalApp.Transcript do
       transcript,
       block(unique_id("error"), :error, :error, "error #{inspect(scope)}", [inspect(reason)])
     )
+  end
+
+  def append_event(%__MODULE__{} = transcript, {:model_configured, _model}) do
+    transcript
   end
 
   def append_event(%__MODULE__{} = transcript, event) do
@@ -498,12 +510,33 @@ defmodule Tui.TerminalApp.Transcript do
   end
 
   defp tool_block(call_id, tool, status, summary) do
-    body =
-      [summary_line(summary), bytes_line(tool), timing_line(tool), args_line(tool.args)]
-      |> Enum.reject(&(&1 == ""))
-
-    block(call_id, :tool, status, tool_title(tool), body)
+    # Single-line tool blocks: the status icon comes from `Block.status`, the
+    # tool name + target lives in the title, and a compact suffix (`· duration`
+    # for ok runs, `· reason` for errors) keeps everything on one row so a long
+    # batch of read_file calls scrolls like a tight log instead of a stack of
+    # multi-line summaries.
+    block(call_id, :tool, status, tool_line(tool, status, summary), [])
   end
+
+  defp tool_line(tool, status, summary) do
+    tool_title(tool) <> tool_suffix(tool, status, summary)
+  end
+
+  defp tool_suffix(tool, :done, _summary) do
+    case timing_line(tool) do
+      "" -> ""
+      "Took " <> rest -> " · " <> rest
+    end
+  end
+
+  defp tool_suffix(_tool, :error, summary) do
+    case format_summary(summary) do
+      "" -> " · failed"
+      text -> " · " <> text
+    end
+  end
+
+  defp tool_suffix(_tool, _status, _summary), do: ""
 
   defp do_tool_started(transcript, call_id, name, args, now_ms) do
     call_id = to_string(call_id)
@@ -572,9 +605,6 @@ defmodule Tui.TerminalApp.Transcript do
 
   defp first_line(value), do: value |> String.split("\n", parts: 2) |> hd()
 
-  defp bytes_line(%{output_bytes: 0}), do: ""
-  defp bytes_line(%{output_bytes: bytes}), do: "output #{bytes} B"
-
   defp timing_line(%{duration_ms: ms}) when is_integer(ms), do: "Took #{format_duration(ms)}"
   defp timing_line(_tool), do: ""
 
@@ -621,13 +651,6 @@ defmodule Tui.TerminalApp.Transcript do
 
   defp format_summary(summary) when is_binary(summary), do: summary
   defp format_summary(summary), do: inspect(summary)
-
-  defp summary_line(""), do: ""
-  defp summary_line("running"), do: ""
-  defp summary_line(summary), do: "summary #{summary}"
-
-  defp args_line(args) when args == %{}, do: ""
-  defp args_line(args), do: "args #{inspect(args)}"
 
   defp segments(transcript, width, spinner) do
     {segments, _prev_kind} =

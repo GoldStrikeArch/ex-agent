@@ -59,6 +59,14 @@ defmodule Tui.TextRenderer do
     [Atom.to_string(role), "> ", text, "\n"]
   end
 
+  def render({:model_request, _model_call_id, _request}) do
+    []
+  end
+
+  def render({:model_response, _model_call_id, _response}) do
+    []
+  end
+
   def render({:assistant_message_started, _message_id}) do
     "assistant> "
   end

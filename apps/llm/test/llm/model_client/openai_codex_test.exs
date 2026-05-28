@@ -12,6 +12,7 @@ defmodule LLM.ModelClient.OpenAICodexTest do
                model: "gpt-test",
                credential: credential(),
                instructions: "agent rules",
+               reasoning_effort: "high",
                session_id: "session-1"
              )
 
@@ -44,12 +45,24 @@ defmodule LLM.ModelClient.OpenAICodexTest do
                  strict: nil
                }
              ],
+             reasoning: %{effort: "high"},
              text: %{verbosity: "low"},
              include: ["reasoning.encrypted_content"],
              tool_choice: "auto",
              parallel_tool_calls: true,
              prompt_cache_key: "session-1"
            } = request.body
+  end
+
+  test "rejects invalid thinking levels before resolving transport" do
+    assert {:error, {:invalid_thinking_level, "huge", _levels}} =
+             OpenAICodex.build_request(
+               [%{role: :user, content: "hello"}],
+               [],
+               model: "gpt-test",
+               credential: credential(),
+               reasoning_effort: "huge"
+             )
   end
 
   test "websocket transport sends response.create and streams text deltas" do

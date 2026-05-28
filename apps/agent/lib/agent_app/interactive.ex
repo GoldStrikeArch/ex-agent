@@ -12,6 +12,7 @@ defmodule AgentApp.Interactive do
   alias Tui.TerminalApp
 
   @model_not_configured_notice "please set the model with /model to use the agent"
+  @model_command_usage "usage: /model [default|minimal|low|medium|high]"
 
   @doc """
   Runs an interactive terminal session.
@@ -58,21 +59,51 @@ defmodule AgentApp.Interactive do
     {session_opts, restore_notice} = ModelDefaults.apply_to_session_opts(session_opts, auth_opts)
     maybe_append_notice(runtime, restore_notice)
 
-    session_opts = default_unconfigured_session_opts(session_opts)
+    session_opts =
+      session_opts
+      |> default_unconfigured_session_opts()
+      |> maybe_enable_structural()
+
+    maybe_index_workspace(session_opts)
 
     session_opts
     |> start_session_resources()
     |> wait_with_session_resources(runtime, bridge, initial_prompt, auth_opts)
   end
 
-  defp start_session_resources(session_opts) do
-    with {:ok, session} <- Core.start_session(session_opts) do
-      start_model_state_resource(session, configured_session?(session_opts))
+  # Routes the structural tools to the Tree-sitter backend when its parser is
+  # loaded; otherwise the core default (`Unavailable`) keeps them degrading to
+  # `backend_unavailable`.
+  defp maybe_enable_structural(session_opts) do
+    if Structural.Backend.available?() do
+      Keyword.put_new(session_opts, :structural_backend, Structural.Backend)
+    else
+      session_opts
     end
   end
 
-  defp start_model_state_resource(session, configured?) do
-    case Agent.start_link(fn -> %{configured?: configured?} end) do
+  # Builds the structural index for the workspace in the background so the first
+  # structural query has data. Gated by `:index_workspace` (the CLI sets it) so
+  # tests and embedders do not index implicitly.
+  defp maybe_index_workspace(session_opts) do
+    if Keyword.get(session_opts, :index_workspace, false) and Structural.Backend.available?() do
+      root = Keyword.get(session_opts, :workspace_root) || File.cwd!()
+      Task.start(fn -> Structural.Index.index_path(Structural.Index, root) end)
+    end
+
+    :ok
+  end
+
+  defp start_session_resources(session_opts) do
+    with {:ok, session} <- Core.start_session(session_opts) do
+      start_model_state_resource(session, session_opts, configured_session?(session_opts))
+    end
+  end
+
+  defp start_model_state_resource(session, session_opts, configured?) do
+    model = model_status_from_session_opts(session_opts)
+
+    case Agent.start_link(fn -> %{configured?: configured?, model: model} end) do
       {:ok, model_state} ->
         {:ok, %{session: session, model_state: model_state}}
 
@@ -110,6 +141,7 @@ defmodule AgentApp.Interactive do
          %{session: session, model_state: model_state},
          auth_opts
        ) do
+    maybe_send_model_status(runtime, model_status(model_state))
     TerminalApp.set_submit_prompt(runtime, &submit_prompt(runtime, session, model_state, &1))
 
     TerminalApp.set_command_handler(
@@ -150,8 +182,10 @@ defmodule AgentApp.Interactive do
           pid(),
           keyword()
         ) :: :ok | {:error, term()}
-  def handle_command(:model, _context, runtime, session, model_state, auth_opts) do
-    setup_model(runtime, session, model_state, auth_opts)
+  def handle_command(:model, context, runtime, session, model_state, auth_opts) do
+    with {:ok, model_opts} <- model_command_opts(context) do
+      setup_model(runtime, session, model_state, auth_opts, model_opts)
+    end
   end
 
   def handle_command(command_id, _context, _runtime, _session, _model_state, _auth_opts) do
@@ -167,9 +201,17 @@ defmodule AgentApp.Interactive do
   """
   @spec setup_model(GenServer.server(), pid(), pid(), keyword()) :: :ok | {:error, term()}
   def setup_model(runtime, session, model_state, auth_opts) do
-    option = ModelCatalog.default()
+    setup_model(runtime, session, model_state, auth_opts, [])
+  end
 
-    with {:ok, _credential} <- resolve_or_login(option, runtime, auth_opts) do
+  @doc """
+  Resolves credentials and configures the current session with command options.
+  """
+  @spec setup_model(GenServer.server(), pid(), pid(), keyword(), keyword()) ::
+          :ok | {:error, term()}
+  def setup_model(runtime, session, model_state, auth_opts, model_opts) do
+    with {:ok, option} <- selected_model_option(model_opts),
+         {:ok, _credential} <- resolve_or_login(option, runtime, auth_opts) do
       configure_model(option, runtime, session, model_state, auth_opts)
     else
       {:error, reason} = error ->
@@ -231,10 +273,22 @@ defmodule AgentApp.Interactive do
 
   defp configure_model(option, runtime, session, model_state, auth_opts) do
     with :ok <- Core.configure_model(session, ModelCatalog.core_opts(option, auth_opts)) do
-      Agent.update(model_state, fn state -> %{state | configured?: true} end)
+      model = ModelCatalog.status_info(option)
+
+      Agent.update(model_state, fn state ->
+        Map.merge(state, %{configured?: true, model: model})
+      end)
+
+      TerminalApp.send_event(runtime, {:model_configured, model})
       persist_model_selection(option, runtime, auth_opts)
-      TerminalApp.append_notice(runtime, "model configured: #{option.label} (#{option.model})")
+      TerminalApp.append_notice(runtime, model_configured_notice(option))
     end
+  end
+
+  defp selected_model_option(opts) do
+    option = ModelCatalog.default()
+    level = Keyword.get(opts, :thinking_level, option.thinking_level)
+    ModelCatalog.with_thinking_level(option, level)
   end
 
   defp persist_model_selection(option, runtime, auth_opts) do
@@ -250,8 +304,17 @@ defmodule AgentApp.Interactive do
     end
   end
 
+  defp model_configured_notice(option) do
+    thinking = LLM.Thinking.label(option.thinking_level)
+    "model configured: #{option.label} (#{option.model}, thinking #{thinking})"
+  end
+
   defp model_setup_failed_notice(:manual_oauth_paste_not_supported_in_tui) do
     "browser callback login failed; run `agent --login openai_codex` and then /model"
+  end
+
+  defp model_setup_failed_notice({:invalid_model_command, usage}) do
+    usage
   end
 
   defp model_setup_failed_notice(reason) do
@@ -259,7 +322,70 @@ defmodule AgentApp.Interactive do
   end
 
   defp model_configured?(model_state) do
-    Agent.get(model_state, & &1.configured?)
+    Agent.get(model_state, &Map.get(&1, :configured?, false))
+  end
+
+  defp model_status(model_state) do
+    Agent.get(model_state, &Map.get(&1, :model))
+  end
+
+  defp maybe_send_model_status(_runtime, nil), do: :ok
+
+  defp maybe_send_model_status(runtime, model) do
+    TerminalApp.send_event(runtime, {:model_configured, model})
+  end
+
+  defp model_command_opts(%{prompt: prompt}) when is_binary(prompt) do
+    prompt
+    |> String.trim()
+    |> String.split(~r/\s+/, trim: true)
+    |> Enum.drop(1)
+    |> parse_model_args()
+  end
+
+  defp model_command_opts(_context), do: {:ok, []}
+
+  defp parse_model_args([]), do: {:ok, []}
+  defp parse_model_args([level]), do: thinking_option(level)
+  defp parse_model_args(["thinking", level]), do: thinking_option(level)
+  defp parse_model_args(["--thinking", level]), do: thinking_option(level)
+  defp parse_model_args(["--reasoning-effort", level]), do: thinking_option(level)
+  defp parse_model_args(["--thinking=" <> level]), do: thinking_option(level)
+  defp parse_model_args(["--reasoning-effort=" <> level]), do: thinking_option(level)
+  defp parse_model_args(_args), do: {:error, {:invalid_model_command, @model_command_usage}}
+
+  defp thinking_option(level) do
+    case LLM.Thinking.normalize(level) do
+      {:ok, normalized} -> {:ok, [thinking_level: normalized]}
+      {:error, _reason} -> {:error, {:invalid_model_command, @model_command_usage}}
+    end
+  end
+
+  defp model_status_from_session_opts(session_opts) do
+    model_opts = Keyword.get(session_opts, :model_opts, [])
+
+    case Keyword.get(model_opts, :model) do
+      model when is_binary(model) and model != "" ->
+        %{
+          label: "configured model",
+          provider: Keyword.get(model_opts, :provider),
+          model: model,
+          thinking_level: status_thinking_level(model_opts)
+        }
+
+      _model ->
+        nil
+    end
+  end
+
+  defp status_thinking_level(model_opts) do
+    model_opts
+    |> Keyword.get(:reasoning_effort, Keyword.get(model_opts, :thinking_level))
+    |> LLM.Thinking.normalize()
+    |> case do
+      {:ok, level} -> level
+      {:error, _reason} -> nil
+    end
   end
 
   defp configured_session?(session_opts) do
